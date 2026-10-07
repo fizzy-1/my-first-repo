@@ -1,0 +1,29 @@
+# dependencies
+/node_modules
+
+# next.js
+/.next/
+/out/
+next-env.d.ts
+*.tsbuildinfo
+
+# production
+/build
+
+# environment — never commit secrets
+.env
+.env.local
+.env.*.local
+
+# uploaded documents (local storage adapter)
+/storage/
+
+# testing
+/playwright-report/
+/test-results/
+/coverage/
+
+# misc
+.DS_Store
+*.pem
+npm-debug.log*

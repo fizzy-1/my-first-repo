@@ -1,0 +1,224 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+/* Class-based dark mode (next-themes toggles `.dark` on <html>). Dark is the default. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ─────────────────────────── Design tokens ───────────────────────────
+   Integral Academy brand: indigo primary (#4C51BF), violet hover (#6B46C1),
+   deep navy surfaces in dark mode. Components consume roles, never raw hex. */
+
+:root {
+  --background: #f5f5f9;
+  --foreground: #191a2b;
+  --card: #ffffff;
+  --card-foreground: #191a2b;
+  --popover: #ffffff;
+  --popover-foreground: #191a2b;
+  --muted: #eeeef4;
+  --muted-foreground: #5c5d73;
+  --subtle: #f7f7fb;
+  --accent: #ececf6;
+  --accent-foreground: #191a2b;
+  --border: #e2e2ec;
+  --input: #d9d9e5;
+  --ring: #6b70d9;
+
+  --primary: #4c51bf;
+  --primary-hover: #6b46c1;
+  --primary-foreground: #ffffff;
+  --primary-soft: #ebecfb;
+  --primary-soft-foreground: #3b3fa3;
+
+  --sidebar: #ffffff;
+  --sidebar-foreground: #3c3d55;
+  --sidebar-active: #ebecfb;
+  --sidebar-active-foreground: #3b3fa3;
+  --sidebar-border: #e6e6ef;
+
+  /* Status (always paired with an icon or label, never colour alone) */
+  --success: #15803d;
+  --success-soft: #e3f6e9;
+  --warning: #a16207;
+  --warning-soft: #fdf3d7;
+  --danger: #c62f2f;
+  --danger-soft: #fde6e6;
+  --info: #2a62c9;
+  --info-soft: #e3edfc;
+  --violet: #6b46c1;
+  --violet-soft: #efe9fb;
+
+  /* Charts — validated categorical palette on the light card surface */
+  --chart-1: #5a5fd0;
+  --chart-2: #e5622d;
+  --chart-3: #16a571;
+  --chart-4: #d99400;
+  --chart-5: #e0679a;
+  --chart-6: #1f8a1f;
+  --chart-grid: #ececf2;
+  --chart-axis: #c9c9d6;
+  --chart-muted: #8a8ba0;
+
+  --radius: 0.75rem;
+  --shadow-card: 0 1px 2px rgb(16 17 40 / 0.04), 0 1px 1px rgb(16 17 40 / 0.03);
+}
+
+.dark {
+  --background: #1e1e2f;
+  --foreground: #ececf5;
+  --card: #2e2e3e;
+  --card-foreground: #ececf5;
+  --popover: #2a2a3b;
+  --popover-foreground: #ececf5;
+  --muted: #26263a;
+  --muted-foreground: #a3a4bd;
+  --subtle: #282838;
+  --accent: #38384c;
+  --accent-foreground: #f2f2fa;
+  --border: #3a3a4f;
+  --input: #45455c;
+  --ring: #7c83f0;
+
+  --primary: #4c51bf;
+  --primary-hover: #6b46c1;
+  --primary-foreground: #ffffff;
+  --primary-soft: #33355e;
+  --primary-soft-foreground: #c3c6ff;
+
+  --sidebar: #181826;
+  --sidebar-foreground: #b9bad2;
+  --sidebar-active: #2c2d4f;
+  --sidebar-active-foreground: #e4e5ff;
+  --sidebar-border: #2a2a3c;
+
+  --success: #4ade80;
+  --success-soft: #1d3a2b;
+  --warning: #fbbf24;
+  --warning-soft: #3d3420;
+  --danger: #f87171;
+  --danger-soft: #45262c;
+  --info: #7cb0ff;
+  --info-soft: #233453;
+  --violet: #b69cf5;
+  --violet-soft: #372c55;
+
+  /* Charts — validated categorical palette on the dark card surface (#2E2E3E) */
+  --chart-1: #7c83f0;
+  --chart-2: #d95926;
+  --chart-3: #199e70;
+  --chart-4: #c98500;
+  --chart-5: #d55181;
+  --chart-6: #2f9e2f;
+  --chart-grid: #3a3a4d;
+  --chart-axis: #4a4a60;
+  --chart-muted: #8f90a8;
+
+  --shadow-card: 0 1px 2px rgb(0 0 0 / 0.25);
+}
+
+@theme inline {
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-subtle: var(--subtle);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary-soft: var(--primary-soft);
+  --color-primary-soft-foreground: var(--primary-soft-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-active: var(--sidebar-active);
+  --color-sidebar-active-foreground: var(--sidebar-active-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
+  --color-violet: var(--violet);
+  --color-violet-soft: var(--violet-soft);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-chart-6: var(--chart-6);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  --shadow-card: var(--shadow-card);
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+    outline-color: color-mix(in oklab, var(--ring) 50%, transparent);
+  }
+
+  html {
+    color-scheme: light;
+  }
+
+  html.dark {
+    color-scheme: dark;
+  }
+
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+    font-feature-settings: "cv11", "ss01";
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  ::selection {
+    background: color-mix(in oklab, var(--primary) 35%, transparent);
+  }
+
+  /* Thin, unobtrusive scrollbars */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+}
+
+@layer utilities {
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+
+  .scrollbar-none {
+    scrollbar-width: none;
+  }
+  .scrollbar-none::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
