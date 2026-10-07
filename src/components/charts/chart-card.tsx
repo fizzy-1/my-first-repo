@@ -26,6 +26,8 @@ export interface SeriesDef {
   slot: 1 | 2 | 3 | 4 | 5 | 6;
   type: "bar" | "line" | "area";
   stackId?: string;
+  /** Overrides the chart-level value format for this series (tables / tooltips). */
+  format?: ValueFormat;
 }
 
 export type ChartRow = Record<string, string | number | null>;
@@ -76,7 +78,7 @@ function ChartTooltip({
         {[...series].reverse().map((s) => (
           <li key={s.key} className="flex items-center gap-2">
             <span aria-hidden className="h-0.5 w-2.5 shrink-0 rounded-full" style={{ background: color(s.slot) }} />
-            <span className="tabular font-semibold text-foreground">{formatValue(Number(row[s.key]) || 0, format)}</span>
+            <span className="tabular font-semibold text-foreground">{formatValue(Number(row[s.key]) || 0, s.format ?? format)}</span>
             <span className="text-muted-foreground">{s.label}</span>
           </li>
         ))}
@@ -218,7 +220,7 @@ export function ChartTable({ data, series, format, xKey = "label", xLabel = "Per
               <TableCell className="text-muted-foreground">{row[xKey]}</TableCell>
               {series.map((s) => (
                 <TableCell key={s.key} className="tabular text-right">
-                  {formatValue(Number(row[s.key]) || 0, format)}
+                  {formatValue(Number(row[s.key]) || 0, s.format ?? format)}
                 </TableCell>
               ))}
             </TableRow>

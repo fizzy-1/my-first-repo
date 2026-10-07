@@ -5,6 +5,7 @@ import { APPROVAL_TYPE } from "@/lib/labels";
 import type { Permission } from "@/lib/rbac";
 import { audit } from "@/server/audit";
 import { assertCan, can, type SessionUser } from "@/server/auth/current-user";
+import { sortBy } from "@/server/sql";
 import { db } from "@/server/db";
 import { ForbiddenError, NotFoundError, ValidationError } from "@/server/errors";
 import { notify } from "@/server/notify";
@@ -95,7 +96,7 @@ export async function listApprovals(
     db.approval.count({ where }),
     db.approval.findMany({
       where,
-      orderBy: [{ [opts.sort]: { sort: opts.dir, nulls: "last" } }, { createdAt: "desc" }],
+      orderBy: [sortBy(opts.sort, opts.dir, ["dueDate", "amount"]), { createdAt: "desc" }],
       skip: opts.skip,
       take: opts.take,
       include: {

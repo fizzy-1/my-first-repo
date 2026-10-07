@@ -33,3 +33,11 @@ export function dateBucketKey(column: string, granularity: Granularity): Prisma.
 export function toMap(rows: { key: string; value: number | null }[]): Map<string, number> {
   return new Map(rows.map((r) => [r.key, Number(r.value ?? 0)]));
 }
+
+/**
+ * Prisma orderBy for a user-selected sort column. `nulls: "last"` is only valid
+ * on nullable columns, so it is applied just to those listed.
+ */
+export function sortBy(field: string, dir: "asc" | "desc", nullable: readonly string[] = []) {
+  return { [field]: nullable.includes(field) ? { sort: dir, nulls: "last" as const } : dir };
+}

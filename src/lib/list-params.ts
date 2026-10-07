@@ -63,3 +63,14 @@ export function buildHref(pathname: string, sp: SearchParams, overrides: Record<
   const qs = params.toString();
   return qs ? `${pathname}?${qs}` : pathname;
 }
+
+/** Report export URL carrying the current filters (plain string params only). */
+export function exportHref(base: string, sp: SearchParams): string {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(sp)) {
+    const v = first(value);
+    if (v !== undefined && key !== "page" && key !== "new") params.set(key, v);
+  }
+  const qs = params.toString();
+  return qs ? `${base}?${qs}` : base;
+}
