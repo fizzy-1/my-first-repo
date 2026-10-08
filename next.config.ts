@@ -6,7 +6,6 @@ import type { NextConfig } from "next";
  * because it carries a fresh script nonce.
  */
 const securityHeaders = [
-  { key: "X-Frame-Options", value: "DENY" },
   { key: "X-Content-Type-Options", value: "nosniff" },
   { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
   { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=(), payment=()" },
@@ -29,7 +28,12 @@ const nextConfig: NextConfig = {
     proxyClientMaxBodySize: "21mb",
   },
   async headers() {
-    return [{ source: "/:path*", headers: securityHeaders }];
+    return [
+      { source: "/:path*", headers: securityHeaders },
+      // Pages can never be framed. Document files set SAMEORIGIN themselves so the
+      // in-app PDF / image preview works (see src/app/api/documents/[versionId]).
+      { source: "/((?!api/documents/).*)", headers: [{ key: "X-Frame-Options", value: "DENY" }] },
+    ];
   },
 };
 

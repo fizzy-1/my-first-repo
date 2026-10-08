@@ -5,6 +5,7 @@ import { formatZAR } from "@/lib/format";
 import { CAMPAIGN_CHANNEL, CONTENT_TYPE, MEETING_TYPE } from "@/lib/labels";
 import { can, type SessionUser } from "@/server/auth/current-user";
 import { db } from "@/server/db";
+import { meetingsVisibleWhere } from "./access";
 import { approvalsAwaitingDecisionWhere } from "./approvals";
 import { tasksVisibleWhere } from "./tasks";
 
@@ -49,10 +50,6 @@ export const CALENDAR_KINDS: Record<CalendarKind, { label: string; tone: "primar
 };
 
 /** Meetings a user may see: all (meetings.read.all) or those they organise / attend. */
-export function meetingsVisibleWhere(user: SessionUser): Prisma.MeetingWhereInput {
-  if (can(user, "meetings.read.all")) return {};
-  return { OR: [{ organizerId: user.id }, { attendees: { some: { userId: user.id } } }] };
-}
 
 /**
  * Every dated item in [from, to] the user is allowed to see, across modules.

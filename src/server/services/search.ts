@@ -5,7 +5,7 @@ import { APPROVAL_STATUS, DOCUMENT_CATEGORY, MEETING_TYPE, SCHOOL_STAGE, TASK_ST
 import { can, canAny, type SessionUser } from "@/server/auth/current-user";
 import { db } from "@/server/db";
 import { approvalsVisibleWhere } from "./approvals";
-import { meetingsVisibleWhere } from "./calendar";
+import { meetingsVisibleWhere } from "./access";
 import { documentsVisibleWhere } from "./document-access";
 import { tasksVisibleWhere } from "./tasks";
 

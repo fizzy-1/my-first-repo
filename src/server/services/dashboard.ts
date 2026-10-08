@@ -8,7 +8,8 @@ import { db } from "@/server/db";
 import { learnerPlatform } from "@/server/integrations/learner-platform";
 import { recentActivity } from "./activity";
 import { pendingApprovalsForDashboard } from "./approvals";
-import { getCalendarEvents, meetingsVisibleWhere } from "./calendar";
+import { meetingsVisibleWhere } from "./access";
+import { getCalendarEvents } from "./calendar";
 import {
   cashPosition,
   churnRate,

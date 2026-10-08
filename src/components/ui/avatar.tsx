@@ -1,12 +1,12 @@
 import { cn, initials } from "@/lib/utils";
 
 const TONES = [
-  "bg-[#4c51bf] text-white",
-  "bg-[#6b46c1] text-white",
+  "bg-[#1f4f8f] text-white",
+  "bg-[#8a6420] text-white",
   "bg-[#0e7c66] text-white",
   "bg-[#b4540f] text-white",
-  "bg-[#a6336b] text-white",
-  "bg-[#2563a8] text-white",
+  "bg-[#8e3a6b] text-white",
+  "bg-[#4a5a9c] text-white",
 ];
 
 function toneFor(seed: string) {

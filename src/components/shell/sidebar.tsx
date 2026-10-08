@@ -42,17 +42,17 @@ function NavLink({
         "group relative flex h-9 items-center gap-3 rounded-lg px-2.5 text-[13px] font-medium transition-colors",
         active
           ? "bg-sidebar-active text-sidebar-active-foreground"
-          : "text-sidebar-foreground hover:bg-accent/70 hover:text-foreground",
+          : "text-sidebar-foreground hover:bg-sidebar-hover hover:text-sidebar-heading",
         collapsed && "justify-center px-0",
       )}
     >
-      {active && <span aria-hidden className="absolute top-1.5 bottom-1.5 left-0 w-[3px] rounded-r-full bg-primary" />}
+      {active && <span aria-hidden className="absolute top-1.5 bottom-1.5 left-0 w-[3px] rounded-r-full bg-sidebar-accent" />}
       <Icon className={cn("size-[18px] shrink-0", active ? "text-sidebar-active-foreground" : "opacity-80")} />
       {!collapsed && <span className="flex-1 truncate">{label}</span>}
       {badge !== undefined && badge > 0 && (
         <span
           className={cn(
-            "tabular inline-flex min-w-5 items-center justify-center rounded-full bg-primary px-1.5 text-[10px] leading-5 font-semibold text-primary-foreground",
+            "tabular inline-flex min-w-5 items-center justify-center rounded-full bg-sidebar-accent px-1.5 text-[10px] leading-5 font-semibold text-[#0b1f3a]",
             collapsed && "absolute top-0.5 right-0.5 min-w-4 px-1 text-[9px] leading-4",
           )}
         >
@@ -91,7 +91,7 @@ export function SidebarNav({
         {groups.map((group) => (
           <div key={group.label}>
             {!collapsed && (
-              <p className="mb-1.5 px-2.5 text-[10px] font-semibold tracking-[0.12em] text-muted-foreground/80 uppercase">
+              <p className="mb-1.5 px-2.5 text-[10px] font-semibold tracking-[0.14em] text-sidebar-muted uppercase">
                 {group.label}
               </p>
             )}
@@ -128,7 +128,7 @@ export function SidebarNav({
           <button
             type="submit"
             className={cn(
-              "flex h-9 w-full items-center gap-3 rounded-lg px-2.5 text-[13px] font-medium text-sidebar-foreground transition-colors hover:bg-accent/70 hover:text-foreground",
+              "flex h-9 w-full items-center gap-3 rounded-lg px-2.5 text-[13px] font-medium text-sidebar-foreground transition-colors hover:bg-sidebar-hover hover:text-sidebar-heading",
               collapsed && "justify-center px-0",
             )}
             aria-label="Log out"
@@ -174,7 +174,7 @@ export function DesktopSidebar({
       <button
         type="button"
         onClick={toggle}
-        className="mx-3 mb-3 flex h-8 items-center justify-center gap-2 rounded-lg text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+        className="mx-3 mb-3 flex h-8 items-center justify-center gap-2 rounded-lg text-xs text-sidebar-muted hover:bg-sidebar-hover hover:text-sidebar-heading"
         aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
       >
         {collapsed ? <PanelLeftOpenIcon className="size-4" /> : <PanelLeftCloseIcon className="size-4" />}

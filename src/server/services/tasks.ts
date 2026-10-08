@@ -2,10 +2,11 @@ import "server-only";
 import type { Prisma, Priority, TaskStatus } from "@prisma/client";
 import { TASK_STATUS } from "@/lib/labels";
 import { audit, diffFields } from "@/server/audit";
-import { can, type SessionUser } from "@/server/auth/current-user";
+import { can, canAny, type SessionUser } from "@/server/auth/current-user";
 import { db, type DbClient } from "@/server/db";
 import { ForbiddenError, NotFoundError, ValidationError } from "@/server/errors";
 import { notify } from "@/server/notify";
+import { bugsVisibleWhere, meetingsVisibleWhere } from "./access";
 
 // ─────────────────────────── Access rules ───────────────────────────
 
@@ -49,6 +50,8 @@ export async function listTasks(
     departmentId?: string;
     projectId?: string;
     overdue?: boolean;
+    /** Additional filter (e.g. development tasks only). */
+    where?: Prisma.TaskWhereInput;
     sort: TaskSort;
     dir: "asc" | "desc";
     skip: number;
@@ -68,6 +71,7 @@ export async function listTasks(
     AND: [
       tasksVisibleWhere(user),
       scopeWhere,
+      opts.where ?? {},
       opts.status === "OPEN" ? { status: { not: "COMPLETED" } } : opts.status ? { status: opts.status } : {},
       opts.priority ? { priority: opts.priority } : {},
       opts.assigneeId ? { assigneeId: opts.assigneeId } : {},
@@ -106,10 +110,12 @@ export async function listTasks(
         department: { select: { id: true, name: true } },
         project: { select: { id: true, name: true } },
         meeting: { select: { id: true, title: true } },
+        feature: { select: { id: true, title: true } },
+        bug: { select: { id: true, number: true } },
         _count: { select: { attachments: true } },
       },
     }),
-    db.task.groupBy({ by: ["status"], where: { AND: [tasksVisibleWhere(user), scopeWhere] }, _count: true }),
+    db.task.groupBy({ by: ["status"], where: { AND: [tasksVisibleWhere(user), scopeWhere, opts.where ?? {}] }, _count: true }),
   ]);
 
   return {
@@ -180,16 +186,35 @@ export interface TaskInput {
   schoolId?: string;
 }
 
-async function validateAssignee(user: SessionUser, assigneeId: string | undefined) {
+async function validateAssignee(user: SessionUser, assigneeId: string | undefined, preAuthorised = false) {
   if (!assigneeId || assigneeId === user.id) return null;
-  if (!can(user, "tasks.assign")) throw new ForbiddenError("You can only create tasks for yourself.");
+  if (!preAuthorised && !can(user, "tasks.assign")) throw new ForbiddenError("You can only create tasks for yourself.");
   const assignee = await db.user.findFirst({ where: { id: assigneeId, status: "ACTIVE" }, select: { id: true, departmentId: true } });
   if (!assignee) throw new ValidationError("The selected assignee is not an active user.", { assigneeId: ["Choose an active team member."] });
   return assignee;
 }
 
-export async function createTask(user: SessionUser, input: TaskInput, client: DbClient = db) {
-  const assignee = await validateAssignee(user, input.assigneeId);
+/** Linked records must be ones the user can see, so tasks can't be attached to hidden meetings, schools or bugs. */
+async function validateLinks(user: SessionUser, input: Pick<TaskInput, "meetingId" | "schoolId" | "featureId" | "bugId">) {
+  const invalid = (field: string, label: string) => new ValidationError(`You don't have access to that ${label}.`, { [field]: [`Choose a ${label} you can access.`] });
+  const [meeting, bug] = await Promise.all([
+    input.meetingId ? db.meeting.count({ where: { AND: [{ id: input.meetingId }, meetingsVisibleWhere(user)] } }) : 1,
+    input.bugId ? db.bug.count({ where: { AND: [{ id: input.bugId }, bugsVisibleWhere(user)] } }) : 1,
+  ]);
+  if (!meeting) throw invalid("meetingId", "meeting");
+  if (!bug) throw invalid("bugId", "bug");
+  if (input.schoolId && !can(user, "schools.read")) throw invalid("schoolId", "school");
+  if (input.featureId && !canAny(user, ["technology.read", "technology.read.assigned"])) throw invalid("featureId", "feature");
+}
+
+/**
+ * `assigneePreAuthorised` is for callers that have already checked the user may
+ * assign this person (e.g. a meeting organiser assigning an action item to an
+ * attendee), so it bypasses the general tasks.assign permission.
+ */
+export async function createTask(user: SessionUser, input: TaskInput, client: DbClient = db, opts: { assigneePreAuthorised?: boolean } = {}) {
+  const assignee = await validateAssignee(user, input.assigneeId, opts.assigneePreAuthorised);
+  await validateLinks(user, input);
   const assigneeId = input.assigneeId ?? user.id;
   const departmentId = input.departmentId ?? assignee?.departmentId ?? user.departmentId ?? null;
 

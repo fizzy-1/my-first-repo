@@ -20,6 +20,27 @@ export function readableCategories(user: SessionUser): DocumentCategory[] {
   return (Object.keys(CATEGORY_PERMISSIONS) as DocumentCategory[]).filter((c) => canAny(user, CATEGORY_PERMISSIONS[c]));
 }
 
+/** Categories a user may file documents into: the ones they can read. */
+export function writableCategories(user: SessionUser): DocumentCategory[] {
+  if (can(user, "documents.manage")) return Object.keys(CATEGORY_PERMISSIONS) as DocumentCategory[];
+  return readableCategories(user);
+}
+
+const DEPARTMENT_CATEGORY: Record<string, DocumentCategory> = {
+  Finance: "FINANCE",
+  Marketing: "MARKETING",
+  Academic: "ACADEMIC",
+  Technology: "TECHNOLOGY",
+};
+
+/** Sensible default category for a new upload: the uploader's department, if they can file there. */
+export function defaultCategory(user: SessionUser): DocumentCategory {
+  const writable = writableCategories(user);
+  const preferred = user.departmentName ? DEPARTMENT_CATEGORY[user.departmentName] : undefined;
+  if (preferred && writable.includes(preferred)) return preferred;
+  return writable.includes("CORPORATE") ? "CORPORATE" : (writable[0] ?? "CORPORATE");
+}
+
 /**
  * Prisma filter for documents a user may see. Applied in SQL for every list,
  * search and download — never filtered after the fact.

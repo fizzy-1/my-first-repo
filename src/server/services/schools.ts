@@ -9,7 +9,7 @@ import { sortBy } from "@/server/sql";
 import { db } from "@/server/db";
 import { NotFoundError, ValidationError } from "@/server/errors";
 import { notify } from "@/server/notify";
-import { meetingsVisibleWhere } from "./calendar";
+import { meetingsVisibleWhere } from "./access";
 import { documentsVisibleWhere } from "./document-access";
 import { tasksVisibleWhere } from "./tasks";
 
