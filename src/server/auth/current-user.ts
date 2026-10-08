@@ -19,6 +19,8 @@ export interface SessionUser {
   departmentName: string | null;
   permissions: ReadonlySet<Permission>;
   sessionId: string;
+  /** Set while the user still has an administrator-issued temporary password. */
+  mustChangePassword: boolean;
 }
 
 /**
@@ -42,14 +44,31 @@ export const getCurrentUser = cache(async (): Promise<SessionUser | null> => {
     departmentName: user.department?.name ?? null,
     permissions: new Set(user.role.permissions.map((rp) => rp.permission.key as Permission)),
     sessionId: session.id,
+    mustChangePassword: user.mustChangePassword,
   };
 });
 
-/** For pages, layouts and server actions: redirects to /login when signed out. */
+/** Pages a user with a temporary password may still open (the proxy passes the path in x-pathname). */
+const PASSWORD_SETUP_PATHS = ["/profile"];
+
+/**
+ * For pages, layouts and server actions: redirects to /login when signed out, and
+ * keeps people with a temporary password on /profile until they choose their own.
+ */
 export async function requireUser(): Promise<SessionUser> {
   const user = await getCurrentUser();
   if (!user) redirect("/login");
+  if (user.mustChangePassword) {
+    const pathname = (await headers()).get("x-pathname");
+    if (pathname && !PASSWORD_SETUP_PATHS.some((p) => pathname === p || pathname.startsWith(`${p}/`))) redirect("/profile?setup=1");
+  }
   return user;
+}
+
+/** For API routes: the signed-in user, or null when signed out or still on a temporary password. */
+export async function getApiUser(): Promise<SessionUser | null> {
+  const user = await getCurrentUser();
+  return user && !user.mustChangePassword ? user : null;
 }
 
 /** For pages: requires ANY of the given permissions, else shows the access-denied page. */

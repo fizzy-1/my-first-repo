@@ -21,8 +21,8 @@
     "db:seed": "prisma db seed",
     "db:studio": "prisma studio",
     "demo:remove": "tsx prisma/seed/remove-demo.ts",
-    "admin:create": "tsx scripts/create-admin.ts",
-    "jobs:deadlines": "tsx scripts/run-deadline-job.ts",
+    "admin:create": "tsx --tsconfig scripts/tsconfig.json scripts/create-admin.ts",
+    "jobs:deadlines": "tsx --tsconfig scripts/tsconfig.json scripts/run-deadline-job.ts",
     "postinstall": "prisma generate"
   },
   "prisma": {

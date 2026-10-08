@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { audit } from "@/server/audit";
-import { getCurrentUser } from "@/server/auth/current-user";
+import { getApiUser } from "@/server/auth/current-user";
 import { isAppError } from "@/server/errors";
 import { getVersionForDownload } from "@/server/services/documents";
 import { ALLOWED_TYPES, storage } from "@/server/storage";
@@ -13,7 +13,7 @@ export const dynamic = "force-dynamic";
  * honoured only for previewable types (PDF, images, plain text).
  */
 export async function GET(request: NextRequest, ctx: RouteContext<"/api/documents/[versionId]">) {
-  const user = await getCurrentUser();
+  const user = await getApiUser();
   if (!user) return NextResponse.json({ error: "Unauthenticated" }, { status: 401 });
   const { versionId } = await ctx.params;
   let version: Awaited<ReturnType<typeof getVersionForDownload>>;

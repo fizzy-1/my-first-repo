@@ -1,0 +1,13 @@
+{
+  // Used by `tsx --tsconfig scripts/tsconfig.json` to run server modules outside Next.js.
+  // "server-only" resolves to its no-op build here (Next does the same for server code).
+  // The `--conditions=react-server` flag is not an option: it also swaps React for its
+  // server build, which breaks `next/navigation` (imported by src/server/auth/current-user.ts).
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "paths": {
+      "@/*": ["../src/*"],
+      "server-only": ["../node_modules/server-only/empty.js"]
+    }
+  }
+}

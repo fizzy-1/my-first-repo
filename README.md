@@ -85,7 +85,7 @@ npm run db:deploy               # applies every migration in prisma/migrations
 # 5a. Development: load the clearly-labelled demo data…
 npm run db:seed
 # 5b. …or production-style: create your first administrator instead
-npm run admin:create -- --email you@integralacademy.co.za --name "Your Name"
+npm run admin:create -- --email you@integralacademy.co.za --name "Your Name"   # add --password <pw>, or --reset-password for an existing account
 
 # 6. Run the app
 npm run dev                     # http://localhost:3000
@@ -307,9 +307,11 @@ executive/restricted document downloads are audited too.
   invoices overdue. It is idempotent (deduplicated notifications), so run it hourly or daily
   from any scheduler (cron, Vercel Cron, GitHub Actions, Cloud Scheduler).
 - **Learner platform sync** — `POST /api/integrations/learner-platform/sync` with
-  `Authorization: Bearer $LEARNER_PLATFORM_SYNC_TOKEN` and a JSON payload of plans, learners,
+  `Authorization: Bearer $LEARNER_PLATFORM_SYNC_TOKEN` and a JSON payload (≤ 5 MB) of learners,
   subscriptions, payments and engagement (schema in
   `src/server/integrations/learner-platform/sync.ts`); records are upserted by external id.
+  Both machine endpoints return 503 while their token is unset. `npm run jobs:deadlines -- --json`
+  prints machine-readable output.
 
 ## Testing & quality
 

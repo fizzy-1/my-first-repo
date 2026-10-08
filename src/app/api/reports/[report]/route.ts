@@ -2,11 +2,13 @@ import { NextResponse, type NextRequest } from "next/server";
 import { ExpenseCategory, ExpenseStatus, IncomeCategory, IncomeStatus, SchoolStage } from "@prisma/client";
 import type { Permission } from "@/lib/rbac";
 import { toCsv } from "@/lib/csv";
-import { dayKey, parseRange, resolveRange } from "@/lib/dates";
+import { dayKey, dbDate, parseRange, resolveRange } from "@/lib/dates";
 import { oneOf } from "@/lib/list-params";
 import { audit } from "@/server/audit";
-import { canAny, getCurrentUser, type SessionUser } from "@/server/auth/current-user";
+import { canAny, getApiUser, type SessionUser } from "@/server/auth/current-user";
 import { db } from "@/server/db";
+import { auditFiltersFromParams, auditLogWhere } from "@/server/services/admin";
+import { academicIntelligence, subscriptionIntelligence } from "@/server/services/intelligence";
 import { listExpenses, listIncome, monthlyProfitAndLoss } from "@/server/services/finance";
 import { learnerGrowthSeries, revenueSeries } from "@/server/services/metrics";
 
@@ -100,10 +102,16 @@ const REPORTS: Record<string, Report> = {
   },
   campaigns: {
     requires: ["marketing.read", "reports.export"],
-    build: async () => {
+    build: async (_u, p) => {
+      // With ?range, totals cover only the weeks in that period (matching the BI marketing tab).
+      const range = p.get("range");
+      const from = range ? dbDate(resolveRange(parseRange(range)).from) : null;
       const rows = await db.campaign.findMany({
         orderBy: { startDate: "desc" },
-        include: { owner: { select: { name: true } }, metrics: { select: { spend: true, leads: true, conversions: true, revenue: true } } },
+        include: {
+          owner: { select: { name: true } },
+          metrics: { where: from ? { periodStart: { gte: from } } : {}, select: { spend: true, leads: true, conversions: true, revenue: true } },
+        },
       });
       return {
         headers: ["Campaign", "Channel", "Status", "Start", "End", "Budget", "Spend", "Leads", "Conversions", "Cost per lead", "Cost per acquisition", "Revenue", "Owner"],
@@ -117,12 +125,37 @@ const REPORTS: Record<string, Report> = {
       };
     },
   },
+  subscriptions: {
+    requires: ["intelligence.read", "finance.read", "reports.export"],
+    build: async (user, p) => {
+      const data = await subscriptionIntelligence(user, resolveRange(parseRange(p.get("range") ?? undefined)));
+      const churn = new Map((data.churnTrend ?? []).map((r) => [r.key, r.churn]));
+      const cancelled = new Map((data.cancellationTrend ?? []).map((r) => [r.key, r.churned]));
+      return {
+        headers: ["Period", "Subscription MRR (ZAR)", "School MRR (ZAR)", "ARPU (ZAR)", "Churn %", "Paid cancellations"],
+        rows: (data.mrrTrend ?? []).map((r) => [r.key, r.subscription, r.school, r.arpu, churn.get(r.key) ?? "", cancelled.get(r.key) ?? ""]),
+      };
+    },
+  },
+  academic: {
+    requires: ["intelligence.read", "academic.read", "reports.export"],
+    build: async (user, p) => {
+      const data = await academicIntelligence(user, resolveRange(parseRange(p.get("range") ?? undefined)));
+      const types = data.contentTypes;
+      return {
+        headers: ["Period", ...types.map((t) => `Published: ${t.label}`), "Published total"],
+        rows: data.publishedTrend.map((r) => {
+          const counts = types.map((t) => Number((r as Record<string, unknown>)[t.key] ?? 0));
+          return [r.key, ...counts, counts.reduce((s, n) => s + n, 0)];
+        }),
+      };
+    },
+  },
   audit: {
     requires: ["audit.read"],
     build: async (_u, p) => {
-      const moduleFilter = p.get("module") || undefined;
       const rows = await db.auditLog.findMany({
-        where: moduleFilter ? { module: moduleFilter } : {},
+        where: auditLogWhere(auditFiltersFromParams((k) => p.get(k))),
         orderBy: { createdAt: "desc" },
         take: MAX_ROWS,
         include: { actor: { select: { name: true, email: true } } },
@@ -137,7 +170,7 @@ const REPORTS: Record<string, Report> = {
 
 export async function GET(request: NextRequest, ctx: RouteContext<"/api/reports/[report]">) {
   const { report: key } = await ctx.params;
-  const user = await getCurrentUser();
+  const user = await getApiUser();
   if (!user) return NextResponse.json({ error: "Unauthenticated" }, { status: 401 });
   const report = REPORTS[key];
   if (!report) return NextResponse.json({ error: "Unknown report" }, { status: 404 });

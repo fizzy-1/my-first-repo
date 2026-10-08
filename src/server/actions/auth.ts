@@ -3,7 +3,7 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { z } from "zod";
-import { formAction, type ActionState } from "@/server/action";
+import { argAction, formAction, type ActionState } from "@/server/action";
 import { audit } from "@/server/audit";
 import { getCurrentUser, getRequestMeta } from "@/server/auth/current-user";
 import { getDummyHash, hashPassword, needsRehash, passwordProblems, verifyPassword } from "@/server/auth/password";
@@ -16,6 +16,7 @@ import {
 } from "@/server/auth/session";
 import { db } from "@/server/db";
 import { ValidationError } from "@/server/errors";
+import { revokeMySession } from "@/server/services/admin";
 
 const WINDOW_MS = 15 * 60 * 1000;
 const MAX_FAILED_PER_IP = 20;
@@ -123,7 +124,8 @@ export async function loginAction(_prev: ActionState, formData: FormData): Promi
     summary: `${user.name} signed in`,
   });
 
-  redirect(safeNext(parsed.data.next));
+  // People on a temporary password go straight to choosing their own.
+  redirect(user.mustChangePassword ? "/profile?setup=1" : safeNext(parsed.data.next));
 }
 
 export async function logoutAction(): Promise<void> {
@@ -147,38 +149,58 @@ const changePasswordSchema = z
 
 export const changePasswordAction = formAction(changePasswordSchema, async (sessionUser, input) => {
   const user = await db.user.findUniqueOrThrow({ where: { id: sessionUser.id } });
+  // Re-entering the current password is a credential check, so it shares the
+  // sign-in throttle: a hijacked session can't be used to brute-force it.
+  const since = new Date(Date.now() - WINDOW_MS);
+  const recentFailures = await db.loginAttempt.count({ where: { email: user.email, success: false, createdAt: { gte: since } } });
+  if (recentFailures >= MAX_FAILED_PER_EMAIL) throw new ValidationError(THROTTLED);
   if (!(await verifyPassword(input.currentPassword, user.passwordHash))) {
+    const { ipAddress } = await getRequestMeta();
+    await db.loginAttempt.create({ data: { email: user.email, ipAddress, success: false } });
     throw new ValidationError("Your current password is incorrect.", { currentPassword: ["Incorrect password."] });
   }
   const problems = passwordProblems(input.newPassword);
-  if (problems.length) throw new ValidationError("Choose a stronger password.", { newPassword: problems });
+  if (problems.length) throw new ValidationError("Choose a stronger password.", { newPassword: [problems.join(" ")] });
   if (await verifyPassword(input.newPassword, user.passwordHash)) {
     throw new ValidationError("Choose a password you haven't used here.", { newPassword: ["Must differ from the current password."] });
   }
   await db.user.update({
     where: { id: user.id },
-    data: { passwordHash: await hashPassword(input.newPassword), passwordChangedAt: new Date() },
+    data: { passwordHash: await hashPassword(input.newPassword), passwordChangedAt: new Date(), mustChangePassword: false },
   });
-  // Sign out every other device.
+  // Keep this session; sign out every other device.
+  const others = await db.session.count({ where: { userId: user.id, id: { not: sessionUser.sessionId } } });
   await invalidateUserSessions(user.id, sessionUser.sessionId);
   await audit(sessionUser, {
     action: "auth.password_changed",
     module: "admin",
     entityType: "User",
     entityId: user.id,
-    summary: `${user.name} changed their password (other sessions signed out)`,
+    summary: `${user.name} changed their password${user.mustChangePassword ? " (replacing a temporary password)" : ""}${others ? ` and signed out ${others} other session${others === 1 ? "" : "s"}` : ""}`,
+    ...(user.mustChangePassword ? { before: { mustChangePassword: true }, after: { mustChangePassword: false } } : {}),
   });
-  return "Password updated. Other devices have been signed out.";
-});
+  return others ? "Password updated. Other devices have been signed out." : "Password updated.";
+}, { allowDuringPasswordChange: true });
 
-export const signOutOtherSessionsAction = formAction(z.object({}), async (user) => {
+export const signOutOtherSessionsAction = argAction(z.object({}), async (user) => {
+  const count = await db.session.count({ where: { userId: user.id, id: { not: user.sessionId } } });
   await invalidateUserSessions(user.id, user.sessionId);
   await audit(user, {
     action: "auth.sessions_revoked",
     module: "admin",
     entityType: "User",
     entityId: user.id,
-    summary: `${user.name} signed out all other sessions`,
+    summary: `${user.name} signed out all other sessions (${count})`,
   });
-  return "Signed out of all other sessions.";
-});
+  return count ? `Signed out of ${count} other session${count === 1 ? "" : "s"}.` : "No other sessions were active.";
+}, { allowDuringPasswordChange: true });
+
+export const revokeSessionAction = argAction(
+  // Session ids are SHA-256 hex digests of the browser token.
+  z.object({ sessionId: z.string().regex(/^[a-f0-9]{64}$/, "Invalid session.") }),
+  async (user, { sessionId }) => {
+    await revokeMySession(user, sessionId);
+    return "Session signed out.";
+  },
+  { allowDuringPasswordChange: true },
+);

@@ -133,7 +133,8 @@ export function parseDateInput(value: string): Date | null {
   if (!match) return null;
   const [, y, m, d] = match;
   const date = new Date(Date.UTC(Number(y), Number(m) - 1, Number(d)));
-  if (Number.isNaN(date.getTime()) || date.getUTCDate() !== Number(d)) return null;
+  // Reject impossible dates (2026-13-01, 2026-02-30) instead of letting Date roll them over.
+  if (Number.isNaN(date.getTime()) || date.getUTCFullYear() !== Number(y) || date.getUTCMonth() !== Number(m) - 1 || date.getUTCDate() !== Number(d)) return null;
   return date;
 }
 
@@ -142,8 +143,19 @@ export function parseDateTimeInput(value: string): Date | null {
   const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(value);
   if (!match) return null;
   const [, y, m, d, hh, mm] = match;
-  const date = new Date(Date.UTC(Number(y), Number(m) - 1, Number(d), Number(hh), Number(mm)) - OFFSET_MS);
-  return Number.isNaN(date.getTime()) ? null : date;
+  const wall = new Date(Date.UTC(Number(y), Number(m) - 1, Number(d), Number(hh), Number(mm)));
+  // Reject out-of-range parts (month 13, 30 Feb, 25:00) rather than rolling them over.
+  if (
+    Number.isNaN(wall.getTime()) ||
+    wall.getUTCFullYear() !== Number(y) ||
+    wall.getUTCMonth() !== Number(m) - 1 ||
+    wall.getUTCDate() !== Number(d) ||
+    wall.getUTCHours() !== Number(hh) ||
+    wall.getUTCMinutes() !== Number(mm)
+  ) {
+    return null;
+  }
+  return new Date(wall.getTime() - OFFSET_MS);
 }
 
 /** Formats an instant as a "YYYY-MM-DD" value for <input type="date">. */

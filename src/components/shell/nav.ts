@@ -64,7 +64,7 @@ export const NAV_GROUPS: NavGroup[] = [
   },
   {
     label: "Administration",
-    items: [{ href: "/admin", label: "Administration", icon: SettingsIcon, anyOf: ["admin.users", "admin.roles", "audit.read"] }],
+    items: [{ href: "/admin", label: "Administration", icon: SettingsIcon, anyOf: ["admin.users", "admin.roles", "audit.read", "announcements.write"] }],
   },
 ];
 

@@ -24,6 +24,13 @@ export type ActionState = {
 
 type HandlerResult = void | string | { message?: string; id?: string };
 
+interface ActionOptions {
+  /** Allow while the user still has a temporary password (changing it, managing sessions). */
+  allowDuringPasswordChange?: boolean;
+}
+
+const PASSWORD_CHANGE_REQUIRED: ActionState = { ok: false, message: "Set a new password on your profile before continuing." };
+
 function toState(result: HandlerResult): ActionState {
   if (typeof result === "string") return { ok: true, message: result };
   return { ok: true, message: result?.message, id: result?.id };
@@ -57,9 +64,11 @@ function echoValues(raw: Record<string, unknown>): Record<string, string> {
 export function formAction<S extends z.ZodType>(
   schema: S,
   handler: (user: SessionUser, input: z.output<S>, formData: FormData) => Promise<HandlerResult>,
+  options: ActionOptions = {},
 ) {
   return async (_prev: ActionState, formData: FormData): Promise<ActionState> => {
     const user = await requireUser();
+    if (user.mustChangePassword && !options.allowDuringPasswordChange) return PASSWORD_CHANGE_REQUIRED;
     const raw = formDataToObject(formData);
     const parsed = schema.safeParse(raw);
     if (!parsed.success) {
@@ -86,9 +95,11 @@ export function formAction<S extends z.ZodType>(
 export function argAction<S extends z.ZodType>(
   schema: S,
   handler: (user: SessionUser, input: z.output<S>) => Promise<HandlerResult>,
+  options: ActionOptions = {},
 ) {
   return async (input: z.input<S>): Promise<ActionState> => {
     const user = await requireUser();
+    if (user.mustChangePassword && !options.allowDuringPasswordChange) return PASSWORD_CHANGE_REQUIRED;
     const parsed = schema.safeParse(input);
     if (!parsed.success) {
       const { fieldErrors, formErrors } = z.flattenError(parsed.error);

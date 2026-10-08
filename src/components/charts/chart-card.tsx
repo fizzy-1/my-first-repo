@@ -220,7 +220,7 @@ export function ChartTable({ data, series, format, xKey = "label", xLabel = "Per
               <TableCell className="text-muted-foreground">{row[xKey]}</TableCell>
               {series.map((s) => (
                 <TableCell key={s.key} className="tabular text-right">
-                  {formatValue(Number(row[s.key]) || 0, s.format ?? format)}
+                  {formatValue(row[s.key] === null || row[s.key] === undefined ? null : Number(row[s.key]) || 0, s.format ?? format)}
                 </TableCell>
               ))}
             </TableRow>
