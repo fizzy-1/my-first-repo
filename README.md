@@ -94,6 +94,28 @@ npm run dev                     # http://localhost:3000
 Production build: `npm run build && npm run start` (run behind HTTPS; the session cookie becomes
 `__Host-` prefixed and `Secure` when `NODE_ENV=production`).
 
+### Deploying (Render, one click)
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/fizzy-1/my-first-repo)
+
+`render.yaml` describes the whole production setup: the web app (Frankfurt, Render's closest
+region to South Africa), a PostgreSQL 16 database, a 5 GB disk for uploaded documents, generated
+`CRON_SECRET` / `LEARNER_PLATFORM_SYNC_TOKEN` values, migrations applied before every release, and
+an hourly deadline-reminder job. It deploys the branch you pick when creating the blueprint
+(the repository's default branch unless you choose another).
+
+1. In Render, connect your GitHub account, then **New → Blueprint** and choose this repository
+   (or use the button above). Enter `APP_URL` when asked (e.g. `https://workspace.integralacademy.co.za`).
+2. When the first deploy finishes, open the web service's **Shell** and create the first
+   administrator: `npm run admin:create -- --email you@integralacademy.co.za --name "Your Name"`.
+   It prints a temporary password that must be changed at first sign-in.
+3. Optional: add your domain under the web service's **Settings → Custom domains** and point a
+   CNAME record at it.
+
+The web service and the cron job need paid Render instance types (a persistent disk isn't available
+on the free tier). Don't run the demo seed in production; for a demo copy, deploy a second blueprint
+with its own database and set `ALLOW_DEMO_SEED=true` there.
+
 ## Environment variables
 
 | Variable | Required | Purpose |

@@ -1,0 +1,68 @@
+# Render Blueprint: one-click deployment of the Executive Workspace.
+# Render → New → Blueprint → pick this repository. You'll be asked for APP_URL;
+# everything else (database, secrets, uploads disk, hourly reminders) is created here.
+# Frankfurt is Render's closest region to South Africa.
+
+databases:
+  - name: integral-db
+    databaseName: integral_workspace
+    user: integral
+    plan: basic-256mb
+    region: frankfurt
+    postgresMajorVersion: "16"
+
+services:
+  - type: web
+    name: integral-workspace
+    runtime: node
+    region: frankfurt
+    # A persistent disk (uploaded documents) needs a paid instance type.
+    plan: starter
+    buildCommand: npm ci && npm run build
+    # Applies new database migrations before each release goes live.
+    preDeployCommand: npm run db:deploy
+    startCommand: npm start
+    healthCheckPath: /api/health
+    disk:
+      name: uploads
+      mountPath: /data
+      sizeGB: 5
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: integral-db
+          property: connectionString
+      - key: APP_URL
+        sync: false # your public address, e.g. https://workspace.integralacademy.co.za
+      - key: STORAGE_DIR
+        value: /data/uploads
+      - key: SESSION_TTL_DAYS
+        value: "7"
+      - key: TRUSTED_PROXY_HOPS
+        value: "1"
+      - key: DEMO_MODE
+        value: "false"
+      - key: CRON_SECRET
+        generateValue: true
+      - key: LEARNER_PLATFORM_SYNC_TOKEN
+        generateValue: true
+
+  # Hourly deadline sweep: overdue and due-soon tasks, school follow-ups, stale
+  # approvals, renewals and overdue invoices. Idempotent, so hourly is safe.
+  - type: cron
+    name: integral-deadlines
+    runtime: node
+    region: frankfurt
+    plan: starter
+    schedule: "7 * * * *"
+    buildCommand: npm ci
+    startCommand: npm run jobs:deadlines
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: integral-db
+          property: connectionString
