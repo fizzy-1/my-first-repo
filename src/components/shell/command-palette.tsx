@@ -16,7 +16,7 @@ import {
   WalletIcon,
   type LucideIcon,
 } from "lucide-react";
-import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
+import { Command, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { visibleNav } from "./nav";
 import { visibleQuickCreate } from "./quick-create";
@@ -113,7 +113,7 @@ export function CommandPalette({
               </div>
             )}
             {!isLoading && q.length >= 2 && visibleResults.length === 0 && navMatches.length === 0 && createMatches.length === 0 && (
-              <CommandEmpty>No results for “{query}”.</CommandEmpty>
+              <p className="px-3 pt-3 text-xs text-muted-foreground">No quick matches for “{query}”.</p>
             )}
             {visibleResults.map((group) => {
               const Icon = CATEGORY_ICONS[group.category] ?? SearchIcon;
@@ -131,6 +131,14 @@ export function CommandPalette({
                 </CommandGroup>
               );
             })}
+            {q.length >= 2 && (
+              <CommandGroup heading="Search">
+                <CommandItem value="see-all-results" onSelect={() => go(`/search?q=${encodeURIComponent(query.trim())}`)}>
+                  <SearchIcon />
+                  See all results for “{query.trim()}”
+                </CommandItem>
+              </CommandGroup>
+            )}
             {createMatches.length > 0 && (
               <CommandGroup heading="Create">
                 {createMatches.map((item) => (
@@ -156,9 +164,11 @@ export function CommandPalette({
             <span>
               Results are limited to records you have access to.
             </span>
-            <button type="button" className="hover:text-foreground" onClick={() => go(`/search?q=${encodeURIComponent(query)}`)}>
-              See all results ↵
-            </button>
+            {q.length >= 2 && (
+              <button type="button" className="hover:text-foreground" onClick={() => go(`/search?q=${encodeURIComponent(query.trim())}`)}>
+                See all results
+              </button>
+            )}
           </div>
         </Command>
       </DialogContent>

@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { CalendarClockIcon, CheckIcon, FileTextIcon, PencilIcon, Trash2Icon } from "lucide-react";
+import { CalendarClockIcon, CheckIcon, PencilIcon, Trash2Icon } from "lucide-react";
 import type { TaskStatus } from "@prisma/client";
 import { deleteTaskAction, setTaskStatusAction, updateTaskAction } from "@/server/actions/tasks";
 import { can, requireUser } from "@/server/auth/current-user";
@@ -16,9 +16,10 @@ import { UserChip } from "@/components/common/user-chip";
 import { ActionButton, ConfirmActionButton } from "@/components/forms/action-button";
 import { FormDialog } from "@/components/forms/form-dialog";
 import { Button } from "@/components/ui/button";
-import { DOCUMENT_CATEGORY, PRIORITY, TASK_STATUS } from "@/lib/labels";
+import { PRIORITY, TASK_STATUS } from "@/lib/labels";
 import { formatDateTime } from "@/lib/format";
 import { taskDefaults, taskFields } from "../task-fields";
+import { TaskAttachments } from "./attachments";
 
 export const metadata: Metadata = { title: "Task" };
 
@@ -107,7 +108,7 @@ export default async function TaskDetailPage(props: PageProps<"/tasks/[id]">) {
         }
       />
 
-      <div className="grid gap-6 lg:grid-cols-[1fr_340px]">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_340px]">
         <div className="space-y-6">
           <SectionCard title="Description">
             {task.description ? (
@@ -116,23 +117,7 @@ export default async function TaskDetailPage(props: PageProps<"/tasks/[id]">) {
               <p className="text-sm text-muted-foreground">No description provided.</p>
             )}
           </SectionCard>
-          <SectionCard title="Attachments" description="Documents linked from the company repository.">
-            {task.attachments.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No documents attached.</p>
-            ) : (
-              <ul className="divide-y divide-border">
-                {task.attachments.map(({ document }) => (
-                  <li key={document.id} className="flex items-center gap-3 py-2.5">
-                    <FileTextIcon className="size-4 text-muted-foreground" />
-                    <Link href={`/documents/${document.id}`} className="flex-1 truncate text-sm hover:underline">
-                      {document.title}
-                    </Link>
-                    <StatusBadge meta={DOCUMENT_CATEGORY} value={document.category} dot={false} />
-                  </li>
-                ))}
-              </ul>
-            )}
-          </SectionCard>
+          <TaskAttachments user={user} task={task} />
         </div>
 
         <div className="space-y-6">

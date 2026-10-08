@@ -9,6 +9,7 @@ import {
   MegaphoneIcon,
   ReceiptIcon,
   SchoolIcon,
+  TargetIcon,
   WalletIcon,
 } from "lucide-react";
 import type { Permission } from "@/lib/rbac";
@@ -32,6 +33,7 @@ export const QUICK_CREATE: QuickCreateItem[] = [
   { label: "New campaign", href: "/marketing?new=campaign", icon: MegaphoneIcon, anyOf: ["marketing.write"] },
   { label: "Report a bug", href: "/technology/bugs?new=bug", icon: BugIcon, anyOf: ["technology.bugs.report"] },
   { label: "Log tutor hours", href: "/academic/hours?new=hours", icon: ClockIcon, anyOf: ["academic.hours.log"] },
+  { label: "New objective", href: "/strategy?new=objective", icon: TargetIcon, anyOf: ["strategy.write"] },
 ];
 
 export function visibleQuickCreate(permissions: readonly string[]) {

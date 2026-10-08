@@ -233,7 +233,7 @@ async function criticalIssues(user: SessionUser, cash: Awaited<ReturnType<typeof
               id: `objective-${o.id}`,
               title: `Objective ${o.status === "DELAYED" ? "delayed" : "at risk"}: ${o.title}`,
               detail: `Owner: ${o.owner.name}`,
-              href: "/strategy",
+              href: `/strategy/${o.id}`,
               severity: o.status === "DELAYED" ? "high" : "warning",
               area: "Strategy",
             });

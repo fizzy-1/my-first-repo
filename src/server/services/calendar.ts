@@ -309,7 +309,7 @@ export async function getCalendarEvents(
         })
         .then((rows) => {
           for (const o of rows)
-            events.push({ id: `objective-${o.id}`, kind: "objective", title: o.title, subtitle: o.owner.name, at: allDay(o.deadline), allDay: true, href: "/strategy" });
+            events.push({ id: `objective-${o.id}`, kind: "objective", title: o.title, subtitle: o.owner.name, at: allDay(o.deadline), allDay: true, href: `/strategy/${o.id}` });
         }),
     );
   }

@@ -7,6 +7,7 @@ import { db, type DbClient } from "@/server/db";
 import { ForbiddenError, NotFoundError, ValidationError } from "@/server/errors";
 import { notify } from "@/server/notify";
 import { bugsVisibleWhere, meetingsVisibleWhere } from "./access";
+import { documentsVisibleWhere } from "./document-access";
 
 // ─────────────────────────── Access rules ───────────────────────────
 
@@ -367,9 +368,12 @@ export async function setTaskAttachments(user: SessionUser, taskId: string, docu
   if (!task) throw new NotFoundError("Task");
   if (!canUpdateStatus(user, task)) throw new ForbiddenError();
   const allowed = documentIds.filter((id) => visibleDocumentIds.has(id));
+  // Attachments the editor can't see stay attached: they can only manage what they can see.
+  const hidden = await db.taskAttachment.findMany({ where: { taskId, document: { NOT: documentsVisibleWhere(user) } }, select: { documentId: true } });
+  const keep = [...new Set([...allowed, ...hidden.map((h) => h.documentId)])];
   await db.$transaction([
     db.taskAttachment.deleteMany({ where: { taskId } }),
-    db.taskAttachment.createMany({ data: allowed.map((documentId) => ({ taskId, documentId })), skipDuplicates: true }),
+    db.taskAttachment.createMany({ data: keep.map((documentId) => ({ taskId, documentId })), skipDuplicates: true }),
   ]);
   await audit(user, {
     action: "task.attachments_updated",

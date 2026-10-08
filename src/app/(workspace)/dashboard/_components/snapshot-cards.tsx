@@ -23,7 +23,7 @@ function Stat({ label, value, sub }: { label: string; value: React.ReactNode; su
 function formatObjectiveValue(value: number, unit: string) {
   if (unit === "ZAR") return formatZAR(value, { compact: value >= 100_000 });
   if (unit === "%") return formatPercent(value, 0);
-  return `${formatNumber(value)}${unit ? ` ${unit}` : ""}`;
+  return `${formatNumber(value, { decimals: Number.isInteger(value) ? undefined : 1 })}${unit ? ` ${unit}` : ""}`;
 }
 
 export function ObjectivesCard({ data }: { data: NonNullable<DashboardData["objectives"]> }) {
@@ -63,7 +63,9 @@ export function ObjectivesCard({ data }: { data: NonNullable<DashboardData["obje
           {list.map((o) => (
             <li key={o.id}>
               <div className="flex items-center gap-2">
-                <p className="min-w-0 flex-1 truncate text-sm font-medium">{o.title}</p>
+                <Link href={`/strategy/${o.id}`} className="min-w-0 flex-1 truncate text-sm font-medium hover:underline">
+                  {o.title}
+                </Link>
                 {o.quarter && <span className="text-[11px] text-muted-foreground">Q{o.quarter}</span>}
                 <StatusBadge meta={OBJECTIVE_STATUS} value={o.status} />
               </div>

@@ -13,6 +13,6 @@ export function formatValue(value: number | null | undefined, format: ValueForma
     case "hours":
       return `${formatNumber(value, { decimals: value % 1 === 0 ? 0 : 1 })}h`;
     default:
-      return formatNumber(value, { compact });
+      return formatNumber(value, { compact, decimals: Number.isInteger(value) || compact ? undefined : 1 });
   }
 }
