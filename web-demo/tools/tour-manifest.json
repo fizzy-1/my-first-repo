@@ -1,0 +1,457 @@
+{
+ "intro": "A visual tour of the MVP running on clearly-labelled demo data: every module, real role-based access, both themes and phone layouts. All figures, people and schools shown are fictional seed data.",
+ "footer": "Integral Academy \u00b7 Executive Workspace MVP \u00b7 screenshots captured from a production build running on demo data.",
+ "sections": [
+  {
+   "id": "signin",
+   "eyebrow": "Access",
+   "title": "Sign-in",
+   "lede": "Private to management and staff. Sessions are database-backed and revocable; sign-ins are rate-limited and audited.",
+   "shots": [
+    {
+     "id": "login",
+     "title": "Sign-in page",
+     "caption": "The crest on paper, as in print, beside a dark sign-in panel. Unauthenticated visitors to any page land here and return to where they were going."
+    }
+   ]
+  },
+  {
+   "id": "dashboard",
+   "eyebrow": "Overview",
+   "title": "Executive dashboard",
+   "lede": "What management needs to know and act on today.",
+   "points": [
+    "KPIs: revenue, active learners, MRR, churn, school partnerships, cash & runway \u2014 each with a period comparison",
+    "Revenue by stream and learner growth with 7d / 30d / 3m / 6m / 12m ranges",
+    "Action centre: pending approvals, overdue tasks, deadlines, critical issues",
+    "Per-user widget visibility and order (Customise)"
+   ],
+   "shots": [
+    {
+     "id": "dashboard",
+     "title": "Dashboard \u2014 Super Admin, dark theme",
+     "roles": [
+      "Super Admin"
+     ],
+     "caption": "Announcements, KPI cards, charts with a table view, pipeline, action centre, strategic objectives, department snapshots and recent activity."
+    },
+    {
+     "id": "light-dashboard",
+     "title": "Dashboard \u2014 light theme",
+     "roles": [
+      "Finance Executive"
+     ],
+     "caption": "The same dashboard in the light theme, as seen by the Finance Executive; widgets follow each role's permissions."
+    }
+   ]
+  },
+  {
+   "id": "bi",
+   "eyebrow": "Insight",
+   "title": "Business intelligence",
+   "lede": "Seven analysis tabs with a server-side period filter, period-over-period comparisons and CSV exports.",
+   "points": [
+    "Overview, learners, subscriptions & revenue, schools, marketing, academic, financial KPIs",
+    "Finance figures are removed on the server for roles without finance access"
+   ],
+   "shots": [
+    {
+     "id": "bi-overview",
+     "title": "Overview",
+     "roles": [
+      "Super Admin"
+     ],
+     "caption": "Revenue, MRR, active and paying learners, churn, schools won, cash and runway, each compared with the previous period."
+    },
+    {
+     "id": "bi-learners",
+     "title": "Learners",
+     "caption": "Learner base, sign-ups vs paid cancellations, and breakdowns by province and plan."
+    },
+    {
+     "id": "bi-schools",
+     "title": "Schools",
+     "caption": "Pipeline conversion by stage, schools won vs lost, contracted partnership MRR and renewals."
+    },
+    {
+     "id": "bi-marketing",
+     "title": "Marketing",
+     "caption": "Spend, leads and conversions; cost per lead and per conversion by channel and campaign."
+    },
+    {
+     "id": "bi-financial",
+     "title": "Financial KPIs",
+     "caption": "Gross margin, cost of revenue, operating expenses, net burn, runway and cash trend."
+    },
+    {
+     "id": "bi-johan",
+     "title": "Same tab, Marketing Executive",
+     "roles": [
+      "Marketing Executive"
+     ],
+     "caption": "Without finance access the financial tab shows a notice instead of numbers; the data is never sent."
+    }
+   ]
+  },
+  {
+   "id": "approvals",
+   "eyebrow": "Decisions",
+   "title": "Approvals",
+   "lede": "Formal sign-off for expenses, purchases, contracts, campaigns, releases and strategic decisions, with a permanent decision record.",
+   "shots": [
+    {
+     "id": "approvals",
+     "title": "Approval queue",
+     "roles": [
+      "Super Admin"
+     ],
+     "caption": "Pending, approved, rejected and changes-requested, with priority, amount and due date. Expenses over R5,000 are routed here automatically."
+    },
+    {
+     "id": "approval",
+     "title": "Approval detail",
+     "caption": "Business case, linked record, decision panel (approve / reject / request changes with a comment) and the full decision history. Nobody can approve their own request."
+    }
+   ]
+  },
+  {
+   "id": "tasks",
+   "eyebrow": "Work",
+   "title": "Tasks",
+   "lede": "Personal, department and company task lists with projects, priorities, due dates and links to meetings, schools, features and bugs.",
+   "shots": [
+    {
+     "id": "tasks",
+     "title": "Task list",
+     "caption": "Scoped views, filters, sorting and pagination done in the database."
+    },
+    {
+     "id": "task",
+     "title": "Task detail",
+     "caption": "Status, assignee, links and document attachments; meeting action items appear here automatically."
+    }
+   ]
+  },
+  {
+   "id": "finance",
+   "eyebrow": "Money",
+   "title": "Finance",
+   "lede": "Income, expenses, cash flow, budgets and projections in Rand.",
+   "shots": [
+    {
+     "id": "finance",
+     "title": "Financial overview",
+     "roles": [
+      "Super Admin"
+     ],
+     "caption": "Revenue, expenses, net, receivables and payables, cash position, runway, monthly P&L and expenses by category."
+    },
+    {
+     "id": "cashflow",
+     "title": "Cash flow",
+     "caption": "Monthly or annual cash in vs cash out and the closing balance, with the full statement table."
+    },
+    {
+     "id": "budgets",
+     "title": "Budgets vs actual",
+     "caption": "Department budgets with spend to date, variance and burn-down."
+    },
+    {
+     "id": "projections",
+     "title": "Projections",
+     "caption": "Conservative / Base / Aggressive scenarios from editable assumptions (growth, churn, pricing, school deals, costs)."
+    },
+    {
+     "id": "light-finance",
+     "title": "Expenses \u2014 light theme",
+     "roles": [
+      "Finance Executive"
+     ],
+     "caption": "Expense register with approval status; large expenses wait for approval before they can be paid."
+    }
+   ]
+  },
+  {
+   "id": "schools",
+   "eyebrow": "Growth",
+   "title": "Schools & partnerships",
+   "lede": "A CRM for the school pipeline: Lead \u2192 Contacted \u2192 Meeting \u2192 Proposal \u2192 Negotiation \u2192 Won / Lost.",
+   "shots": [
+    {
+     "id": "schools-board",
+     "title": "Pipeline board",
+     "caption": "Drag-and-drop (or menu) stage moves, values, follow-up reminders and overdue flags."
+    },
+    {
+     "id": "school",
+     "title": "School profile",
+     "caption": "Contacts, partnership terms and renewal, notes, meetings, tasks and documents for one school."
+    }
+   ]
+  },
+  {
+   "id": "marketing",
+   "eyebrow": "Growth",
+   "title": "Marketing",
+   "lede": "Campaigns with budgets, assigned teams, weekly performance and approvals.",
+   "shots": [
+    {
+     "id": "marketing",
+     "title": "Campaigns",
+     "caption": "Spend, leads, conversions and cost per lead across campaigns and channels, plus a campaign calendar."
+    },
+    {
+     "id": "campaign",
+     "title": "Campaign detail",
+     "caption": "Weekly spend and lead trends, budget burn, team and recorded metrics."
+    }
+   ]
+  },
+  {
+   "id": "academic",
+   "eyebrow": "Operations",
+   "title": "Academic",
+   "lede": "Content production and tutoring.",
+   "shots": [
+    {
+     "id": "academic",
+     "title": "Content pipeline",
+     "caption": "Idea \u2192 Planned \u2192 Recording \u2192 Editing \u2192 Review \u2192 Approved \u2192 Published, with learner engagement from the learner platform."
+    },
+    {
+     "id": "hours",
+     "title": "Tutor hours",
+     "roles": [
+      "Super Admin"
+     ],
+     "caption": "Tutors log hours; the Head Tutor approves or rejects them in bulk (never their own)."
+    }
+   ]
+  },
+  {
+   "id": "technology",
+   "eyebrow": "Operations",
+   "title": "Product & technology",
+   "lede": "Roadmap, bugs and development tasks for the learner platform.",
+   "shots": [
+    {
+     "id": "roadmap",
+     "title": "Roadmap",
+     "caption": "Backlog \u2192 Planned \u2192 In progress \u2192 Testing \u2192 Released, with linked open bugs."
+    },
+    {
+     "id": "bugs",
+     "title": "Bug tracker",
+     "caption": "Severity, status and assignment; critical and high bugs alert the product team."
+    }
+   ]
+  },
+  {
+   "id": "team",
+   "eyebrow": "People",
+   "title": "Team",
+   "lede": "Directory, reporting lines and headcount. Salaries and performance are visible only to authorised roles.",
+   "shots": [
+    {
+     "id": "team",
+     "title": "Team directory",
+     "roles": [
+      "Super Admin"
+     ],
+     "caption": "Cost to company is shown here because this role has sensitive team access; most roles never receive it from the server."
+    }
+   ]
+  },
+  {
+   "id": "documents",
+   "eyebrow": "Knowledge",
+   "title": "Documents",
+   "lede": "The company repository: folders, versions, tags, previews and access control.",
+   "shots": [
+    {
+     "id": "documents",
+     "title": "Repository",
+     "caption": "Folder tree by category, search, tags and access levels (all staff, department, executive, restricted)."
+    },
+    {
+     "id": "document",
+     "title": "Document preview",
+     "caption": "In-browser PDF/image/text preview, version history with checksums, and permission-checked downloads."
+    }
+   ]
+  },
+  {
+   "id": "meetings",
+   "eyebrow": "Collaboration",
+   "title": "Meetings",
+   "lede": "Board, executive, departmental and school meetings.",
+   "shots": [
+    {
+     "id": "meetings",
+     "title": "Meetings",
+     "caption": "Upcoming and past meetings with decisions and action-item progress."
+    },
+    {
+     "id": "meeting",
+     "title": "Meeting record",
+     "caption": "Agenda and notes, recorded decisions, attendance, RSVPs, and action items that become tasks in each owner's list."
+    }
+   ]
+  },
+  {
+   "id": "calendar",
+   "eyebrow": "Planning",
+   "title": "Calendar",
+   "lede": "Every dated item the viewer may see, in South African time.",
+   "shots": [
+    {
+     "id": "calendar",
+     "title": "Month view",
+     "caption": "Meetings, task deadlines, approvals, follow-ups, payments, campaigns, content and releases, filterable by kind; an agenda view is one click away."
+    }
+   ]
+  },
+  {
+   "id": "strategy",
+   "eyebrow": "Direction",
+   "title": "Strategy",
+   "lede": "Annual company objectives and the quarterly priorities that roll up to them.",
+   "shots": [
+    {
+     "id": "strategy",
+     "title": "Objectives",
+     "caption": "On track / At risk / Delayed / Completed, with live values for metric-linked goals (learners, MRR, schools, runway)."
+    },
+    {
+     "id": "objective",
+     "title": "Objective detail",
+     "caption": "Progress, check-in history and quarterly children."
+    }
+   ]
+  },
+  {
+   "id": "find",
+   "eyebrow": "Everywhere",
+   "title": "Search & notifications",
+   "lede": "Global search (\u2318K) across everything the user may see, and a notification centre.",
+   "shots": [
+    {
+     "id": "search",
+     "title": "Search results",
+     "caption": "Grouped results with highlighted matches."
+    },
+    {
+     "id": "notifications",
+     "title": "Notifications",
+     "caption": "Assignments, approval requests and decisions, deadlines, documents, meetings and announcements."
+    }
+   ]
+  },
+  {
+   "id": "admin",
+   "eyebrow": "Control",
+   "title": "Administration",
+   "lede": "Users, roles, the audit trail and company announcements.",
+   "shots": [
+    {
+     "id": "admin-users",
+     "title": "Users",
+     "roles": [
+      "Super Admin"
+     ],
+     "caption": "Create users with a one-time temporary password, change roles, suspend or offboard (sessions revoked), reset passwords and unlock accounts."
+    },
+    {
+     "id": "admin-roles",
+     "title": "Roles & permissions",
+     "caption": "The nine roles and their permissions, defined in code and checked against the database."
+    },
+    {
+     "id": "admin-audit",
+     "title": "Audit log",
+     "caption": "Who did what and when, with filters, previous/new value diffs and CSV export. The log is append-only."
+    },
+    {
+     "id": "admin-announcements",
+     "title": "Announcements",
+     "caption": "Company-wide notices shown on everyone's dashboard, with scheduling and expiry."
+    }
+   ]
+  },
+  {
+   "id": "profile",
+   "eyebrow": "You",
+   "title": "Profile & security",
+   "lede": "Every user manages their own password and signed-in devices.",
+   "shots": [
+    {
+     "id": "profile",
+     "title": "Profile",
+     "caption": "Change password, see every signed-in device and sign out the others. People given a temporary password must set their own before using anything else."
+    }
+   ]
+  },
+  {
+   "id": "mobile",
+   "eyebrow": "On the go",
+   "title": "On a phone",
+   "lede": "The urgent things first: KPIs, approvals, tasks, notifications and meetings.",
+   "shots": [
+    {
+     "id": "m-dashboard",
+     "mobile": true,
+     "title": "Dashboard",
+     "caption": "KPIs, then the action centre, then my tasks & meetings."
+    },
+    {
+     "id": "m-approvals",
+     "mobile": true,
+     "title": "Approvals",
+     "caption": "Review and decide from anywhere."
+    },
+    {
+     "id": "m-tasks",
+     "mobile": true,
+     "title": "Tasks",
+     "caption": "Your work, filtered."
+    },
+    {
+     "id": "m-meetings",
+     "mobile": true,
+     "title": "Meetings",
+     "caption": "Today's and upcoming meetings."
+    },
+    {
+     "id": "m-notifications",
+     "mobile": true,
+     "title": "Notifications",
+     "caption": "What changed and what needs you."
+    }
+   ]
+  },
+  {
+   "id": "access",
+   "eyebrow": "Security",
+   "title": "Role-based access",
+   "lede": "Nine roles with fine-grained permissions enforced on the server, not just hidden in the interface.",
+   "shots": [
+    {
+     "id": "tutor-dashboard",
+     "title": "A tutor's workspace",
+     "roles": [
+      "Tutor"
+     ],
+     "caption": "No Finance, Schools, Marketing, BI or Administration in the menu; the dashboard shows only what a tutor may see."
+    },
+    {
+     "id": "tutor-denied",
+     "title": "Direct link to Finance",
+     "roles": [
+      "Tutor"
+     ],
+     "caption": "Typing the URL doesn't help: the server refuses and shows Access denied."
+    }
+   ]
+  }
+ ]
+}
