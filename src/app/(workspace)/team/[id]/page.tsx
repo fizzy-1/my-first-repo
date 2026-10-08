@@ -94,7 +94,7 @@ export default async function TeamMemberPage(props: PageProps<"/team/[id]">) {
         }
       />
 
-      <div className="grid gap-6 lg:grid-cols-[1fr_340px]">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_340px]">
         <div className="min-w-0 space-y-6">
           {perf ? (
             <SectionCard title="Performance" description="Task delivery over the last 90 days">

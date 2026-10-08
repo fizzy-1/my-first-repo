@@ -21,6 +21,16 @@ function greeting(now: Date) {
   return hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
 }
 
+/**
+ * On phones and tablets (single column) urgent items come first — KPIs, then the
+ * action centre, then the user's own tasks and meetings. Desktop keeps the user's order.
+ */
+const MOBILE_ORDER: Partial<Record<WidgetId, string>> = {
+  kpis: "max-xl:order-1",
+  actions: "max-xl:order-2",
+  mywork: "max-xl:order-3",
+};
+
 export default async function DashboardPage(props: PageProps<"/dashboard">) {
   const user = await requireUser();
   const sp = await props.searchParams;
@@ -120,7 +130,7 @@ export default async function DashboardPage(props: PageProps<"/dashboard">) {
 
       <div className="grid grid-flow-row-dense gap-6 xl:grid-cols-3">
         {ordered.map((id) => (
-          <section key={id} className={cn("min-w-0", widgets[id]!.span)} aria-label={DASHBOARD_WIDGETS.find((w) => w.id === id)?.label}>
+          <section key={id} className={cn("min-w-0", MOBILE_ORDER[id] ?? "max-xl:order-4", widgets[id]!.span)} aria-label={DASHBOARD_WIDGETS.find((w) => w.id === id)?.label}>
             {widgets[id]!.node}
           </section>
         ))}

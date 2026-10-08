@@ -82,13 +82,13 @@ export default async function FinanceOverviewPage() {
           <ul className="divide-y divide-border">
             {data.recentIncome.map((i) => (
               <li key={i.id} className="flex items-center gap-3 py-2.5 text-sm">
-                <LandmarkIcon className="size-4 text-muted-foreground" />
+                <LandmarkIcon className="size-4 shrink-0 text-muted-foreground" />
                 <div className="min-w-0 flex-1">
                   <p className="truncate font-medium">{i.customer}</p>
                   <p className="text-xs text-muted-foreground">INV-{i.number} · {formatDate(i.date)}</p>
                 </div>
                 <StatusBadge meta={INCOME_STATUS} value={i.status} />
-                <span className="tabular w-24 text-right font-medium">{formatZAR(i.amount)}</span>
+                <span className="tabular w-24 shrink-0 text-right font-medium">{formatZAR(i.amount)}</span>
               </li>
             ))}
           </ul>
@@ -97,13 +97,13 @@ export default async function FinanceOverviewPage() {
           <ul className="divide-y divide-border">
             {data.recentExpenses.map((e) => (
               <li key={e.id} className="flex items-center gap-3 py-2.5 text-sm">
-                <FileWarningIcon className="size-4 text-muted-foreground" />
+                <FileWarningIcon className="size-4 shrink-0 text-muted-foreground" />
                 <div className="min-w-0 flex-1">
                   <p className="truncate font-medium">{e.supplier}</p>
                   <p className="text-xs text-muted-foreground">EXP-{e.number} · {formatDate(e.date)}</p>
                 </div>
                 <StatusBadge meta={EXPENSE_STATUS} value={e.status} />
-                <span className="tabular w-24 text-right font-medium">{formatZAR(e.amount)}</span>
+                <span className="tabular w-24 shrink-0 text-right font-medium">{formatZAR(e.amount)}</span>
               </li>
             ))}
           </ul>

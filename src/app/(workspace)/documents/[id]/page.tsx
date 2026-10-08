@@ -125,7 +125,7 @@ export default async function DocumentPage(props: PageProps<"/documents/[id]">) 
           </>
         }
       />
-      <div className="grid gap-6 xl:grid-cols-[1fr_360px]">
+      <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
         <Card className="min-h-[480px] overflow-hidden">
           {!latest ? (
             <p className="p-6 text-sm text-muted-foreground">No file uploaded.</p>
@@ -149,7 +149,7 @@ export default async function DocumentPage(props: PageProps<"/documents/[id]">) 
             <pre className="max-h-[75vh] overflow-auto p-6 font-mono text-[13px] leading-relaxed whitespace-pre-wrap">{text ?? "File is too large to preview — download it instead."}</pre>
           )}
         </Card>
-        <div className="space-y-6">
+        <div className="min-w-0 space-y-6">
           <SectionCard title="Details">
             <dl className="space-y-2.5 text-sm">
               {[

@@ -91,7 +91,7 @@ export default async function ApprovalDetailPage(props: PageProps<"/approvals/[i
         }
       />
 
-      <div className="grid gap-6 lg:grid-cols-[1fr_380px]">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_380px]">
         <div className="space-y-6">
           <SectionCard title="Business case">
             <p className="text-sm leading-relaxed whitespace-pre-wrap">{approval.description}</p>
