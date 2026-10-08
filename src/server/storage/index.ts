@@ -65,7 +65,8 @@ class LocalDiskStorage implements StorageAdapter {
 let instance: StorageAdapter | null = null;
 
 export function storage(): StorageAdapter {
-  instance ??= new LocalDiskStorage(path.resolve(process.cwd(), process.env.STORAGE_DIR || "./storage/uploads"));
+  // Runtime-configured location: tell the bundler not to trace the project for it.
+  instance ??= new LocalDiskStorage(path.resolve(/*turbopackIgnore: true*/ process.cwd(), process.env.STORAGE_DIR || "./storage/uploads"));
   return instance;
 }
 
