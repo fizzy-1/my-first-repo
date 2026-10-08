@@ -19,8 +19,10 @@ import { ValidationError } from "@/server/errors";
 
 const WINDOW_MS = 15 * 60 * 1000;
 const MAX_FAILED_PER_IP = 20;
-const MAX_FAILED_PER_EMAIL = 8;
 const LOCK_AFTER_FAILURES = 5;
+// Same threshold as the account lock, so unknown and real emails are throttled
+// identically and responses don't reveal which accounts exist.
+const MAX_FAILED_PER_EMAIL = LOCK_AFTER_FAILURES;
 
 const INVALID = "Invalid email or password.";
 const THROTTLED = "Too many sign-in attempts. Please wait 15 minutes and try again.";

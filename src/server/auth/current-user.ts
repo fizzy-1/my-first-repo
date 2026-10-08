@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import type { Permission, RoleKey } from "@/lib/rbac";
 import { hasAny, hasPermission } from "@/lib/rbac";
 import { ForbiddenError } from "@/server/errors";
+import { clientIp } from "./client-ip";
 import { SESSION_COOKIE, validateSessionToken } from "./session";
 
 export interface SessionUser {
@@ -74,8 +75,7 @@ export function assertCan(user: SessionUser, ...permissions: Permission[]): void
 export async function getRequestMeta(): Promise<{ ipAddress: string | null; userAgent: string | null }> {
   try {
     const h = await headers();
-    const forwarded = h.get("x-forwarded-for")?.split(",")[0]?.trim();
-    return { ipAddress: forwarded || h.get("x-real-ip") || null, userAgent: h.get("user-agent") };
+    return { ipAddress: clientIp(h.get("x-forwarded-for"), h.get("x-real-ip")), userAgent: h.get("user-agent") };
   } catch {
     // Outside a request (scripts / jobs).
     return { ipAddress: null, userAgent: null };
