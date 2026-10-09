@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS users (
   role TEXT NOT NULL CHECK (role IN ('admin','manager','member')),
   job_title TEXT,
   active INTEGER NOT NULL DEFAULT 1,
+  must_change_password INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE TABLE IF NOT EXISTS sessions (
@@ -137,6 +138,13 @@ CREATE INDEX IF NOT EXISTS activity_created ON activity(created_at);
 export const all = (sql, ...params) => db.prepare(sql).all(...params);
 export const get = (sql, ...params) => db.prepare(sql).get(...params);
 export const run = (sql, ...params) => db.prepare(sql).run(...params);
+
+// Upgrades for workspaces created by an earlier version: add columns that are missing.
+function ensureColumn(table, column, definition) {
+  if (!all(`PRAGMA table_info(${table})`).some((c) => c.name === column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+}
+ensureColumn("users", "must_change_password", "INTEGER NOT NULL DEFAULT 0");
+ensureColumn("activity", "audience", "TEXT NOT NULL DEFAULT 'all'");
 
 /** Records a line in the team activity feed. "manager" entries (money, private files) are hidden from members. */
 export function logActivity(userId, summary, audience = "all") {

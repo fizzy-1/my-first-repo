@@ -12,13 +12,16 @@ A small team workspace for Integral Academy that runs on one of your own compute
 |---|---|
 | **Dashboard** | Cash and runway (managers), your tasks, overdue work, school follow-ups due this week, pending approvals, content progress, upcoming meetings, team activity |
 | **Tasks** | List or board view; assign, prioritise, set due dates, tick off |
+| **Calendar** | Month view (agenda list on phones) of meetings, task deadlines, school follow-ups and content due dates; filter to just your own |
 | **Schools pipeline** | Schools from first contact to signed, with deal value, learner numbers, follow-up dates, call notes and one-click follow-up tasks |
 | **Content** | Board for videos, lessons, worksheets, quizzes and past-paper memos: Idea → Recording → Editing → Review → Published |
 | **Finance** *(managers)* | Income and spending, cash on hand, monthly burn, runway, spending by category, CSV export |
 | **Approvals** | Anyone can request spending approval. A manager approves or rejects it with a note. Nobody can approve their own request |
 | **Meetings** | Notes and decisions. Action items become tasks on the team's list |
 | **Documents** | Upload PDFs, images and Office files (up to 20 MB each). Files can be marked private |
-| **Team & settings** | Add people, set roles, reset passwords, deactivate leavers; set the company name and starting bank balance |
+| **Team & settings** | Add people, set roles, reset passwords, deactivate leavers; set the company name and starting bank balance; download a backup |
+
+Also: **search everything** from the top bar (or press <kbd>Ctrl</kbd>+<kbd>K</kbd> / <kbd>/</kbd>). The sidebar shows **badges** for your open tasks (red if any are overdue) and approvals waiting for a manager.
 
 ### Roles
 
@@ -31,14 +34,14 @@ A small team workspace for Integral Academy that runs on one of your own compute
 ## Run it
 
 1. Install **Node.js 22.5 or newer** (the LTS version is fine) from <https://nodejs.org>.
-2. Open a terminal in this `workspace-lite` folder and run:
+2. Start the workspace:
+   - **Windows**: double-click **`Start Workspace.bat`**.
+   - **Mac**: double-click **`Start Workspace.command`**. The first time, macOS may block it. If so, right-click the file, choose **Open**, then confirm.
+   - **Or from a terminal** in this folder, run `npm start`.
 
-   ```sh
-   npm start
-   ```
-
-3. Open <http://localhost:3000>. The first visit asks you to create the admin account.
-4. Add your team under **Team & settings** and give each person their temporary password privately. They can change it under **My account**.
+   A window opens showing the workspace's addresses. Keep it open while people use the workspace, and close it (or press Ctrl+C) to stop.
+3. Your browser opens <http://localhost:3000>. The first visit asks you to create the admin account.
+4. Add your team under **Team & settings**, and give each person a temporary password privately. They must choose their own password the first time they sign in.
 
 ### Try it with demo data first
 
@@ -53,20 +56,25 @@ When you're ready to use it for real, stop the server, delete the `data` folder 
 
 ## Using it from other computers
 
-The server listens on your whole local network. Find the IP address of the computer running it:
+The server listens on your whole local network, and the start window prints the address to share, for example `http://192.168.1.20:3000`. Teammates open that address in their browser.
 
-- **Windows**: run `ipconfig` and look for the IPv4 address.
-- **macOS**: open System Settings → Network.
-
-Teammates then open `http://<that address>:3000`, for example `http://192.168.1.20:3000`. If they can't connect, allow Node.js through that computer's firewall. Keep the computer on (and awake) during working hours.
+If you need to find the address yourself: on Windows run `ipconfig` and look for the IPv4 address; on a Mac open System Settings → Network. If they can't connect, allow Node.js through that computer's firewall. Keep the computer on (and awake) during working hours.
 
 **Keep it on your private network.** Don't expose port 3000 to the internet directly. If the team needs remote access, use a private network tool such as Tailscale, or put it behind an HTTPS reverse proxy and start it with `COOKIE_SECURE=true`.
 
 ## Backups
 
-All data is in the `data` folder. Copy it somewhere safe (a USB drive or cloud storage) at least weekly. Stop the server first, or copy it when nobody is using it.
+All data is in the `data` folder.
 
-To restore a backup: stop the server, replace the `data` folder with your copy, and start the server again.
+**Easy way:** an admin clicks **Team & settings → Download backup**. You get a single `.zip` containing a safe copy of the database and every uploaded file, which you can store in cloud storage or on a USB drive. If you haven't backed up for a week, the dashboard reminds admins.
+
+**Manual way:** stop the server and copy the `data` folder. Use this if the workspace grows past 1 GB, which is too large for the download button.
+
+To restore: stop the server, unzip the backup inside this folder (it contains a `data` folder that replaces the current one), and start the server again.
+
+## Updating to a new version
+
+Download a backup first, then replace every file in this folder except the `data` folder, and start the workspace again. Your data stays, and the database upgrades itself automatically.
 
 ## Settings
 
@@ -85,7 +93,8 @@ All settings are optional environment variables:
 - Repeated failed sign-ins are slowed down: an account locks for 15 minutes after 5 wrong passwords.
 - Every permission check runs on the server; the browser only hides buttons.
 - Members can't see finance, other people's approval requests, private documents, or money-related activity.
-- If someone forgets their password, an admin sets a new one under **Team & settings**.
+- Passwords set by an admin are temporary. The person must choose their own at their next sign-in, so the admin never knows it.
+- If someone forgets their password, an admin sets a new temporary one under **Team & settings**.
 
 ## How it's built
 
@@ -93,6 +102,7 @@ All settings are optional environment variables:
 - `db.js`: the database schema (Node's built-in SQLite).
 - `passwords.js`: password hashing.
 - `seed.js`: optional demo data.
+- `Start Workspace.bat` / `Start Workspace.command`: double-click launchers that check Node.js, start the server and open the browser.
 - `public/`: the browser app (React and htm, vendored locally so it works offline), `ui.js` (components and charts) and `app.js` (screens).
 
 There's no build step. Edit a file and restart the server to see the change.

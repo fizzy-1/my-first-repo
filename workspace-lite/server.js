@@ -1,9 +1,12 @@
 // Integral Workspace Lite — a small, self-hosted workspace for a startup team.
 // One process, one SQLite file, no npm dependencies:  node server.js
 import http from "node:http";
+import os from "node:os";
+import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { createReadStream, existsSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { createReadStream, existsSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { crc32, deflateRawSync } from "node:zlib";
 import { fileURLToPath } from "node:url";
 import { DATA_DIR, all, db, get, getSetting, logActivity, run, setSetting } from "./db.js";
 import { hashPassword, passwordProblem, verifyPassword } from "./passwords.js";
@@ -74,11 +77,11 @@ function currentUser(req) {
   const token = parseCookies(req).ws_session;
   if (!token) return null;
   const row = get(
-    `SELECT u.id, u.name, u.email, u.role, u.job_title, u.active, s.expires_at FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?`,
+    `SELECT u.id, u.name, u.email, u.role, u.job_title, u.active, u.must_change_password, s.expires_at FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?`,
     sha256(token),
   );
   if (!row || !row.active || new Date(row.expires_at) < new Date()) return null;
-  return { id: row.id, name: row.name, email: row.email, role: row.role, job_title: row.job_title };
+  return { id: row.id, name: row.name, email: row.email, role: row.role, job_title: row.job_title, must_change_password: Boolean(row.must_change_password) };
 }
 
 const DUMMY_HASH = await hashPassword(randomBytes(12).toString("hex"));
@@ -317,11 +320,17 @@ function financeSummary(months = 12) {
     expenseCategories: categories,
   };
 }
+/** Today's date on this computer's clock (the office's time zone), as YYYY-MM-DD. */
+function localToday() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
 function dashboard(user) {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localToday();
   const manager = atLeast(user, "manager");
   return {
     company: getSetting("company_name", "Integral Academy"),
+    backup: atLeast(user, "admin") ? { due: backupDue(), last: getSetting("last_backup_at") } : null,
     finance: manager ? financeSummary(12) : null,
     myTasks: all("SELECT * FROM tasks WHERE assignee_id = ? AND status <> 'done' ORDER BY due_date IS NULL, due_date LIMIT 8", user.id),
     overdueTasks: all("SELECT * FROM tasks WHERE status <> 'done' AND due_date < ? ORDER BY due_date LIMIT 8", today),
@@ -344,6 +353,84 @@ const DOC_TYPES = {
   ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
 };
 const canSeeDoc = (user, d) => !d.private || d.uploaded_by === user.id || atLeast(user, "manager");
+
+// ─────────────────────────── Backups ───────────────────────────
+/** Builds a .zip in memory (deflate, no zip64, so under 4 GB). files: [{ name, data: Buffer }]. */
+function zipFiles(files) {
+  const now = new Date();
+  const time = (now.getHours() << 11) | (now.getMinutes() << 5) | Math.floor(now.getSeconds() / 2);
+  const date = ((now.getFullYear() - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate();
+  const parts = [];
+  const central = [];
+  let offset = 0;
+  for (const file of files) {
+    const name = Buffer.from(file.name, "utf8");
+    const deflated = deflateRawSync(file.data);
+    const stored = deflated.length >= file.data.length;
+    const body = stored ? file.data : deflated;
+    const crc = crc32(file.data);
+    const header = Buffer.alloc(30);
+    header.writeUInt32LE(0x04034b50, 0);
+    header.writeUInt16LE(20, 4);
+    header.writeUInt16LE(0x0800, 6); // UTF-8 names
+    header.writeUInt16LE(stored ? 0 : 8, 8);
+    header.writeUInt16LE(time, 10);
+    header.writeUInt16LE(date, 12);
+    header.writeUInt32LE(crc, 14);
+    header.writeUInt32LE(body.length, 18);
+    header.writeUInt32LE(file.data.length, 22);
+    header.writeUInt16LE(name.length, 26);
+    parts.push(header, name, body);
+    const entry = Buffer.alloc(46);
+    entry.writeUInt32LE(0x02014b50, 0);
+    entry.writeUInt16LE(20, 4);
+    entry.writeUInt16LE(20, 6);
+    entry.writeUInt16LE(0x0800, 8);
+    entry.writeUInt16LE(stored ? 0 : 8, 10);
+    entry.writeUInt16LE(time, 12);
+    entry.writeUInt16LE(date, 14);
+    entry.writeUInt32LE(crc, 16);
+    entry.writeUInt32LE(body.length, 20);
+    entry.writeUInt32LE(file.data.length, 24);
+    entry.writeUInt16LE(name.length, 28);
+    entry.writeUInt32LE(offset, 42);
+    central.push(entry, name);
+    offset += header.length + name.length + body.length;
+  }
+  const directory = Buffer.concat(central);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(files.length, 8);
+  end.writeUInt16LE(files.length, 10);
+  end.writeUInt32LE(directory.length, 12);
+  end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...parts, directory, end]);
+}
+const MAX_BACKUP = 1024 * 1024 * 1024;
+/** A consistent copy of the database plus every uploaded file, laid out like the data folder. */
+function buildBackup() {
+  const snapshot = path.join(os.tmpdir(), `workspace-backup-${randomBytes(6).toString("hex")}.db`);
+  try {
+    db.prepare("VACUUM INTO ?").run(snapshot);
+    const files = [{ name: "data/workspace.db", data: readFileSync(snapshot) }];
+    let total = files[0].data.length;
+    const uploads = path.join(DATA_DIR, "uploads");
+    for (const name of readdirSync(uploads)) {
+      const file = path.join(uploads, name);
+      if (!statSync(file).isFile()) continue;
+      total += statSync(file).size;
+      if (total > MAX_BACKUP) throw new HttpError(413, "The workspace is too big to download as one file. Copy the data folder instead (see the README).");
+      files.push({ name: `data/uploads/${name}`, data: readFileSync(file) });
+    }
+    return zipFiles(files);
+  } finally {
+    rmSync(snapshot, { force: true });
+  }
+}
+const backupDue = () => {
+  const last = getSetting("last_backup_at");
+  return !last || Date.now() - new Date(last).getTime() > 7 * 86400000;
+};
 
 // ─────────────────────────── API router ───────────────────────────
 async function api(req, res, url) {
@@ -403,16 +490,65 @@ async function api(req, res, url) {
     if (!(await verifyPassword(String(body.current || ""), row.password_hash))) throw new HttpError(422, "Your current password is incorrect.", { current: "Incorrect password." });
     const problem = passwordProblem(body.next);
     if (problem) throw new HttpError(422, problem, { next: problem });
-    run("UPDATE users SET password_hash = ? WHERE id = ?", await hashPassword(body.next), user.id);
+    if (body.next === body.current) throw new HttpError(422, "Choose a password different from the current one.", { next: "Must be different from the current password." });
+    run("UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?", await hashPassword(body.next), user.id);
     const token = sha256(parseCookies(req).ws_session || "");
     run("DELETE FROM sessions WHERE user_id = ? AND token_hash <> ?", user.id, token);
     return send(res, 200, { ok: true });
   }
+  // Someone signed in with a temporary password must choose their own before doing anything else.
+  if (user.must_change_password) throw new HttpError(403, "Please choose a new password first.");
 
   if (parts[0] === "dashboard" && method === "GET") return send(res, 200, dashboard(user));
   if (parts[0] === "finance" && parts[1] === "summary" && method === "GET") {
     if (!atLeast(user, "manager")) throw new HttpError(403, "Finance is for managers.");
     return send(res, 200, financeSummary(Math.min(24, Math.max(3, Number(url.searchParams.get("months")) || 12))));
+  }
+
+  // ── Badge counts for the navigation ──
+  if (parts[0] === "counts" && method === "GET") {
+    return send(res, 200, {
+      myOpenTasks: get("SELECT COUNT(*) AS n FROM tasks WHERE assignee_id = ? AND status <> 'done'", user.id).n,
+      myOverdueTasks: get("SELECT COUNT(*) AS n FROM tasks WHERE assignee_id = ? AND status <> 'done' AND due_date < ?", user.id, localToday()).n,
+      approvalsToDecide: atLeast(user, "manager") ? get("SELECT COUNT(*) AS n FROM approvals WHERE status = 'pending' AND (requested_by IS NULL OR requested_by <> ?)", user.id).n : 0,
+    });
+  }
+
+  // ── Calendar: everything with a date in a range (at most ~2 months) ──
+  if (parts[0] === "calendar" && method === "GET") {
+    const from = url.searchParams.get("from") || "";
+    const to = url.searchParams.get("to") || "";
+    if (!validDate(from) || !validDate(to) || to < from) throw new HttpError(400, "Choose a valid date range.");
+    if ((new Date(to) - new Date(from)) / 86400000 > 70) throw new HttpError(400, "Choose a range of two months or less.");
+    return send(res, 200, [
+      ...all("SELECT id, title, due_date AS date, status, assignee_id FROM tasks WHERE due_date BETWEEN ? AND ?", from, to).map((r) => ({ type: "task", id: r.id, title: r.title, date: r.date, done: r.status === "done", person_id: r.assignee_id })),
+      ...all("SELECT id, school AS title, next_follow_up AS date, owner_id FROM leads WHERE next_follow_up BETWEEN ? AND ? AND stage NOT IN ('won','lost')", from, to).map((r) => ({ type: "followup", id: r.id, title: r.title, date: r.date, done: false, person_id: r.owner_id })),
+      ...all("SELECT id, title, due_date AS date, stage, owner_id FROM content WHERE due_date BETWEEN ? AND ?", from, to).map((r) => ({ type: "content", id: r.id, title: r.title, date: r.date, done: r.stage === "published", person_id: r.owner_id })),
+      ...all("SELECT id, title, date FROM meetings WHERE date BETWEEN ? AND ?", from, to).map((r) => ({ type: "meeting", id: r.id, title: r.title, date: r.date, done: false, person_id: null })),
+    ]);
+  }
+
+  // ── Search across the workspace (only what this person may see) ──
+  if (parts[0] === "search" && method === "GET") {
+    const q = String(url.searchParams.get("q") || "").trim().slice(0, 100);
+    if (q.length < 2) return send(res, 200, []);
+    const like = `%${q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+    const find = (sql, cols, ...extra) => all(sql.replace("$MATCH", `(${cols.map((c) => `${c} LIKE ? ESCAPE '\\'`).join(" OR ")})`), ...cols.map(() => like), ...extra);
+    const manager = atLeast(user, "manager");
+    const results = [
+      ...find("SELECT id, title, status, due_date FROM tasks WHERE $MATCH ORDER BY status = 'done', id DESC LIMIT 6", ["title", "notes"]).map((r) => ({ type: "task", id: r.id, title: r.title, status: r.status, date: r.due_date })),
+      ...find("SELECT id, school, city, stage FROM leads WHERE $MATCH ORDER BY school LIMIT 6", ["school", "contact_name", "contact_email", "city"]).map((r) => ({ type: "lead", id: r.id, title: r.school, sub: r.city, status: r.stage })),
+      ...find("SELECT id, title, type, stage FROM content WHERE $MATCH ORDER BY id DESC LIMIT 6", ["title", "topic"]).map((r) => ({ type: "content", id: r.id, title: r.title, sub: r.type, status: r.stage })),
+      ...find("SELECT id, title, date FROM meetings WHERE $MATCH ORDER BY date DESC LIMIT 6", ["title", "attendees", "notes", "decisions"]).map((r) => ({ type: "meeting", id: r.id, title: r.title, date: r.date })),
+      ...find("SELECT * FROM documents WHERE $MATCH ORDER BY id DESC LIMIT 20", ["title", "file_name", "folder"]).filter((d) => canSeeDoc(user, d)).slice(0, 6).map((r) => ({ type: "document", id: r.id, title: r.title, sub: `${r.folder} · ${r.file_name}` })),
+      ...(manager
+        ? find("SELECT id, title, status, amount FROM approvals WHERE $MATCH ORDER BY id DESC LIMIT 6", ["title", "details"])
+        : find("SELECT id, title, status, amount FROM approvals WHERE $MATCH AND requested_by = ? ORDER BY id DESC LIMIT 6", ["title", "details"], user.id)
+      ).map((r) => ({ type: "approval", id: r.id, title: r.title, status: r.status, amount: r.amount })),
+      ...(manager ? find("SELECT id, description, date, amount, kind FROM transactions WHERE $MATCH ORDER BY date DESC LIMIT 6", ["description", "counterparty", "category"]).map((r) => ({ type: "transaction", id: r.id, title: r.description, date: r.date, amount: r.kind === "expense" ? -r.amount : r.amount })) : []),
+      ...find("SELECT id, name, job_title FROM users WHERE $MATCH AND active = 1 ORDER BY name LIMIT 6", ["name", "email", "job_title"]).map((r) => ({ type: "person", id: r.id, title: r.name, sub: r.job_title })),
+    ];
+    return send(res, 200, results);
   }
 
   // ── Team (everyone can list names; admins manage) ──
@@ -428,7 +564,7 @@ async function api(req, res, url) {
       const problem = passwordProblem(body.password);
       if (problem) throw new HttpError(422, problem, { password: problem });
       if (get("SELECT id FROM users WHERE email = ?", data.email)) throw new HttpError(422, "That email is already in use.", { email: "Already in use." });
-      const created = insert("users", { ...data, active: data.active ?? 1, password_hash: await hashPassword(body.password) });
+      const created = insert("users", { ...data, active: data.active ?? 1, password_hash: await hashPassword(body.password), must_change_password: 1 });
       logActivity(user.id, `${user.name} added ${created.name} to the team`);
       return send(res, 201, { id: created.id });
     }
@@ -445,6 +581,7 @@ async function api(req, res, url) {
         const problem = passwordProblem(body.password);
         if (problem) throw new HttpError(422, problem, { password: problem });
         data.password_hash = await hashPassword(body.password);
+        data.must_change_password = 1;
       }
       update("users", id, data);
       if (data.active === 0 || data.password_hash) run("DELETE FROM sessions WHERE user_id = ?", id);
@@ -453,9 +590,24 @@ async function api(req, res, url) {
     }
   }
 
+  // ── Backup download (admin) ──
+  if (parts[0] === "backup" && method === "GET") {
+    if (!atLeast(user, "admin")) throw new HttpError(403, "Only an admin can download backups.");
+    const zip = buildBackup();
+    setSetting("last_backup_at", new Date().toISOString());
+    logActivity(user.id, `${user.name} downloaded a backup`, "manager");
+    res.writeHead(200, {
+      "Content-Type": "application/zip",
+      "Content-Length": zip.length,
+      "Content-Disposition": `attachment; filename="workspace-backup-${localToday()}.zip"`,
+      "Cache-Control": "no-store",
+    });
+    return res.end(zip);
+  }
+
   // ── Settings (admin) ──
   if (parts[0] === "settings") {
-    if (method === "GET") return send(res, 200, { company_name: getSetting("company_name", "Integral Academy"), opening_balance: Number(getSetting("opening_balance", "0")), opening_date: getSetting("opening_date", "") });
+    if (method === "GET") return send(res, 200, { company_name: getSetting("company_name", "Integral Academy"), opening_balance: Number(getSetting("opening_balance", "0")), opening_date: getSetting("opening_date", ""), last_backup_at: getSetting("last_backup_at") });
     if (method === "PUT") {
       if (!atLeast(user, "admin")) throw new HttpError(403, "Only an admin can change settings.");
       const data = validate({ company_name: { type: "text", max: 120 }, opening_balance: { type: "money" }, opening_date: { type: "date" } }, await readJson(req), { partial: true });
@@ -611,9 +763,31 @@ const server = http.createServer(async (req, res) => {
 // Expired sessions are cleared hourly.
 setInterval(() => run("DELETE FROM sessions WHERE expires_at < ?", new Date().toISOString()), 3600000).unref();
 
+/** Opens the default browser (used by the double-click start scripts). */
+function openBrowser(target) {
+  const [cmd, args] = process.platform === "win32" ? ["cmd", ["/c", "start", "", target]] : process.platform === "darwin" ? ["open", [target]] : ["xdg-open", [target]];
+  try {
+    spawn(cmd, args, { stdio: "ignore", detached: true }).on("error", () => {}).unref();
+  } catch {
+    /* no browser available: the address is printed instead */
+  }
+}
+const LOCAL_URL = `http://localhost:${PORT}`;
+server.on("error", (error) => {
+  if (error.code === "EADDRINUSE") {
+    console.error(`Port ${PORT} is already in use — the workspace is probably already running. Open ${LOCAL_URL}`);
+    if (process.argv.includes("--open")) openBrowser(LOCAL_URL);
+  } else console.error(error);
+  process.exit(1);
+});
 server.listen(PORT, HOST, () => {
-  console.log(`Integral Workspace Lite is running on http://localhost:${PORT}`);
-  if (HOST === "0.0.0.0") console.log("Others on your network can use http://<this-computer's-IP>:" + PORT);
+  if (process.argv.includes("--open")) openBrowser(LOCAL_URL);
+  console.log(`Integral Workspace Lite is running on ${LOCAL_URL}`);
+  if (HOST === "0.0.0.0") {
+    const addresses = Object.values(os.networkInterfaces()).flat().filter((a) => a && a.family === "IPv4" && !a.internal).map((a) => `http://${a.address}:${PORT}`);
+    if (addresses.length) console.log(`Others on your network can use: ${addresses.join("  or  ")}`);
+  }
+  console.log("Keep this window open while the team is using the workspace. Press Ctrl+C to stop it.");
   if (get("SELECT COUNT(*) AS n FROM users").n === 0) console.log("Open it in a browser to create the first admin account.");
 });
 

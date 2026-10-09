@@ -2,7 +2,7 @@
  * Talks to server.js over /api. The server enforces all permissions; the checks here only hide buttons. */
 (function () {
   "use strict";
-  const { html, Fragment, useState, useEffect, useMemo, useCallback, fmt, today, addDays, toDate } = UI;
+  const { html, Fragment, useState, useEffect, useMemo, useCallback, useRef, fmt, today, addDays, toDate } = UI;
   const { Icon, Badge, StatusBadge, Button, Card, Section, PageHeader, Kpi, Grid, Tabs, EmptyState, Avatar, UserChip, DueDate } = UI;
   const { Field, TextInput, TextArea, Select, Modal, Table, ChartCard, BarList, Kanban } = UI;
   const AppContext = React.createContext(null);
@@ -25,6 +25,7 @@
       err.fields = data && data.fields;
       throw err;
     }
+    if (method !== "GET") window.dispatchEvent(new Event("ws:changed"));
     return data;
   }
   /** Loads a GET endpoint; `reload()` refetches while keeping the current data on screen. */
@@ -102,6 +103,20 @@
   const go = (path) => {
     window.location.hash = `#/${path}`;
   };
+  /** Opens the record named by a URL parameter (e.g. #/tasks?task=12) once its list has loaded. */
+  function useOpenFromParam(param, rows, open) {
+    const handled = useRef(null);
+    useEffect(() => {
+      if (!param) {
+        handled.current = null;
+        return;
+      }
+      if (!rows || handled.current === param) return;
+      handled.current = param;
+      const row = rows.find((r) => r.id === Number(param));
+      if (row) open(row);
+    }, [param, rows]); // eslint-disable-line react-hooks/exhaustive-deps
+  }
 
   // ─────────────────────────── Forms ───────────────────────────
   /**
@@ -263,6 +278,10 @@
           res.reload();
         };
         return html`<div style=${{ display: "grid", gap: 16 }}>
+          ${d.backup && d.backup.due && html`<${Card} style=${{ padding: "12px 16px", display: "flex", flexWrap: "wrap", alignItems: "center", gap: 12, background: "var(--gold-soft)", color: "var(--gold-fg)", fontSize: 13.5 }}>
+            <${Icon} name="shield-check" /><span style=${{ flex: "1 1 260px" }}>${d.backup.last ? `Your last backup was on ${fmt.date(d.backup.last)}.` : "You haven't downloaded a backup yet."} Keep a copy of the workspace somewhere safe.</span>
+            <a href="#/team" style=${{ fontWeight: 600 }}>Back up now</a>
+          <//>`}
           <${Grid} min=${185}>
             ${f && html`<${Kpi} label="Cash on hand" icon="wallet" value=${fmt.zar(f.cash, { compact: Math.abs(f.cash) >= 1e6 })} sub=${f.runwayMonths === null ? "Not burning cash" : `About ${fmt.number(f.runwayMonths, { decimals: 1 })} months of runway`} href="#/finance" />`}
             ${f && html`<${Kpi} label="Net this month" icon="trending-up" value=${fmt.zar(f.thisMonth.net)} sub=${`Income ${fmt.zar(f.thisMonth.income)} · Spend ${fmt.zar(f.thisMonth.expense)}`} href="#/finance" />`}
@@ -335,13 +354,14 @@
       ${confirmDialog}
     <//>`;
   }
-  function TasksView() {
+  function TasksView({ params }) {
     const { user, userName, toast } = useApp();
     const res = useResource("/api/tasks");
     const act = useAction();
     const [scope, setScope] = useState("mine");
     const [view, setView] = useState("list");
     const [editing, setEditing] = useState(null); // null | "new" | task
+    useOpenFromParam(params.task, res.data, setEditing);
     const saved = (msg) => {
       setEditing(null);
       toast(msg);
@@ -385,7 +405,7 @@
             { key: "due", header: "Due", sort: (t) => t.due_date, render: (t) => html`<${DueDate} date=${t.due_date} done=${t.status === "done"} />` },
           ]} /><//>`;
       }}<//>
-      <${TaskModal} open=${Boolean(editing)} task=${editing === "new" ? null : editing} onClose=${() => setEditing(null)} onSaved=${saved} />
+      <${TaskModal} open=${Boolean(editing)} task=${editing === "new" ? null : editing} onClose=${() => { setEditing(null); if (params.task) go("tasks"); }} onSaved=${(msg) => { saved(msg); if (params.task) go("tasks"); }} />
     <//>`;
   }
 
@@ -499,11 +519,12 @@
   }
 
   // ─────────────────────────── Content ───────────────────────────
-  function ContentView() {
+  function ContentView({ params }) {
     const { user, userName, toast } = useApp();
     const res = useResource("/api/content");
     const act = useAction();
     const [editing, setEditing] = useState(null);
+    useOpenFromParam(params.item, res.data, setEditing);
     const [confirm, confirmDialog] = useConfirm();
     const manager = atLeast(user, "manager");
     const move = async (c, stage) => {
@@ -520,7 +541,7 @@
           <span style=${{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}><${Badge} tone="outline">${META.contentType[c.type].label}<//>${c.topic && html`<${Muted}>${c.topic}<//>`}</span>
           <span style=${{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}><${UserChip} name=${c.owner_id ? userName(c.owner_id) : null} />${c.stage !== "published" && html`<${DueDate} date=${c.due_date} />`}</span>
         </button>`} />`}<//>
-      <${FormModal} open=${Boolean(editing)} onClose=${() => setEditing(null)} title=${item ? "Edit content" : "New content item"} fields=${CONTENT_FIELDS(manager || (item && item.stage === "published"))} initial=${item || { owner_id: user.id }}
+      <${FormModal} open=${Boolean(editing)} onClose=${() => { setEditing(null); if (params.item) go("content"); }} title=${item ? "Edit content" : "New content item"} fields=${CONTENT_FIELDS(manager || (item && item.stage === "published"))} initial=${item || { owner_id: user.id }}
         submitLabel=${item ? "Save" : "Add"}
         extraFooter=${item && manager && html`<${Button} variant="ghost" icon="trash-2" style=${{ color: "var(--danger)" }} onClick=${() => confirm(`Delete “${item.title}”?`, async () => { await act(() => api("DELETE", `/api/content/${item.id}`), "Deleted"); setEditing(null); res.reload(); })}>Delete<//>`}
         onSubmit=${async (v) => {
@@ -531,6 +552,82 @@
           res.reload();
         }} />
       ${confirmDialog}
+    <//>`;
+  }
+
+  // ─────────────────────────── Calendar ───────────────────────────
+  const EVENT_TYPES = {
+    meeting: { label: "Meeting", icon: "notebook-pen", slot: 5, href: (e) => `meetings?meeting=${e.id}` },
+    task: { label: "Task due", icon: "list-checks", slot: 1, href: (e) => `tasks?task=${e.id}` },
+    followup: { label: "School follow-up", icon: "school", slot: 4, href: (e) => `pipeline?lead=${e.id}` },
+    content: { label: "Content due", icon: "video", slot: 3, href: (e) => `content?item=${e.id}` },
+  };
+  const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+  function EventChip({ e }) {
+    const t = EVENT_TYPES[e.type];
+    return html`<a href=${`#/${t.href(e)}`} title=${`${t.label}: ${e.title}`} style=${{ display: "flex", alignItems: "center", gap: 5, minWidth: 0, padding: "2px 6px", borderRadius: 5, fontSize: 12, lineHeight: "18px", textDecoration: e.done ? "line-through" : "none",
+      color: e.done ? "var(--muted-fg)" : "var(--fg)", background: `color-mix(in oklab, var(--chart-${t.slot}) 13%, var(--card))`, borderLeft: `3px solid var(--chart-${t.slot})` }}>
+      <span style=${{ display: "inline-flex", flexShrink: 0, color: "var(--muted-fg)" }}><${Icon} name=${t.icon} size=${11} /></span>
+      <span style=${{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>${e.title}</span>
+    </a>`;
+  }
+  function CalendarView() {
+    const { user, userName } = useApp();
+    const narrow = UI.useNarrow();
+    const [month, setMonth] = useState(() => `${today().slice(0, 7)}-01`);
+    const [mineOnly, setMineOnly] = useState(false);
+    const [dayOpen, setDayOpen] = useState(null);
+    const first = toDate(month);
+    const offset = (first.getDay() + 6) % 7; // Monday-first weeks
+    const days = Array.from({ length: 42 }, (_, i) => addDays(month, i - offset));
+    const res = useResource(`/api/calendar?from=${days[0]}&to=${days[41]}`);
+    const shift = (n) => {
+      const d = toDate(month);
+      d.setMonth(d.getMonth() + n);
+      setMonth(`${UI.isoDate(d).slice(0, 7)}-01`);
+    };
+    const order = Object.keys(EVENT_TYPES);
+    const events = (res.data || []).filter((e) => !mineOnly || e.person_id === user.id || e.type === "meeting").sort((a, b) => order.indexOf(a.type) - order.indexOf(b.type) || a.done - b.done);
+    const byDay = {};
+    for (const e of events) (byDay[e.date] = byDay[e.date] || []).push(e);
+    const thisMonth = month.slice(0, 7);
+    const now = today();
+    const title = first.toLocaleDateString("en-ZA", { month: "long", year: "numeric" });
+    const legend = html`<div style=${{ display: "flex", flexWrap: "wrap", gap: "6px 14px", fontSize: 12, color: "var(--muted-fg)" }}>${order.map((k) => html`<span key=${k} style=${{ display: "inline-flex", alignItems: "center", gap: 6 }}><span aria-hidden="true" style=${{ width: 10, height: 10, borderRadius: 3, background: `var(--chart-${EVENT_TYPES[k].slot})` }} /><${Icon} name=${EVENT_TYPES[k].icon} size=${12} />${EVENT_TYPES[k].label}</span>`)}</div>`;
+    return html`<${Fragment}>
+      <${PageHeader} title="Calendar" description="Meetings, task deadlines, school follow-ups and content due dates in one place." actions=${html`
+        <label style=${{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 13 }}><input type="checkbox" checked=${mineOnly} onChange=${(e) => setMineOnly(e.target.checked)} />Only mine</label>
+        <${Button} icon="chevron-left" ariaLabel="Previous month" onClick=${() => shift(-1)} />
+        <${Button} onClick=${() => setMonth(`${now.slice(0, 7)}-01`)}>Today<//>
+        <${Button} icon="chevron-right" ariaLabel="Next month" onClick=${() => shift(1)} />`} />
+      <${Card} style=${{ padding: 16, display: "grid", gap: 12 }}>
+        <div style=${{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+          <h2 style=${{ margin: 0, fontSize: 18 }}>${title}</h2>${legend}
+        </div>
+        ${res.error && !res.data ? html`<${EmptyState} icon="triangle-alert" title="Couldn't load the calendar" description=${res.error.message} />`
+          : narrow ? html`<div>
+            ${days.filter((d) => d.slice(0, 7) === thisMonth && byDay[d]).length === 0 && html`<${EmptyState} icon="calendar-days" title="Nothing scheduled this month" />`}
+            ${days.filter((d) => d.slice(0, 7) === thisMonth && byDay[d]).map((d) => html`<div key=${d} style=${{ padding: "10px 0", borderTop: "1px solid var(--border)", display: "grid", gap: 6 }}>
+              <strong style=${{ fontSize: 13, color: d === now ? "var(--primary)" : undefined }}>${toDate(d).toLocaleDateString("en-ZA", { weekday: "long", day: "numeric", month: "short" })}${d === now ? " · Today" : ""}</strong>
+              ${byDay[d].map((e) => html`<${EventChip} key=${e.type + e.id} e=${e} />`)}
+            </div>`)}
+          </div>`
+          : html`<div role="grid" aria-label=${title} style=${{ display: "grid", gridTemplateColumns: "repeat(7, minmax(0, 1fr))", border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden" }}>
+            ${WEEKDAYS.map((w) => html`<div key=${w} role="columnheader" style=${{ padding: "6px 8px", fontSize: 11.5, fontWeight: 600, color: "var(--muted-fg)", background: "var(--subtle)", borderBottom: "1px solid var(--border)" }}>${w}</div>`)}
+            ${days.map((d, i) => {
+              const list = byDay[d] || [];
+              const inMonth = d.slice(0, 7) === thisMonth;
+              return html`<div key=${d} role="gridcell" style=${{ minHeight: 108, padding: 6, display: "flex", flexDirection: "column", gap: 3, minWidth: 0, background: inMonth ? "var(--card)" : "var(--subtle)", borderTop: i >= 7 ? "1px solid var(--border)" : 0, borderLeft: i % 7 ? "1px solid var(--border)" : 0 }}>
+                <span class="tabular" style=${{ alignSelf: "flex-start", fontSize: 12, fontWeight: d === now ? 700 : 500, color: d === now ? "var(--primary-fg)" : inMonth ? "var(--fg)" : "var(--muted-fg)", background: d === now ? "var(--primary)" : "transparent", borderRadius: 99, minWidth: 22, height: 22, display: "grid", placeItems: "center", padding: "0 5px" }}>${Number(d.slice(8))}</span>
+                ${list.slice(0, 3).map((e) => html`<${EventChip} key=${e.type + e.id} e=${e} />`)}
+                ${list.length > 3 && html`<button onClick=${() => setDayOpen(d)} style=${{ all: "unset", cursor: "pointer", fontSize: 11.5, color: "var(--primary)", padding: "0 6px" }}>+${list.length - 3} more</button>`}
+              </div>`;
+            })}
+          </div>`}
+      <//>
+      <${Modal} open=${Boolean(dayOpen)} onClose=${() => setDayOpen(null)} title=${dayOpen ? toDate(dayOpen).toLocaleDateString("en-ZA", { weekday: "long", day: "numeric", month: "long" }) : ""} width=${460}>
+        ${(byDay[dayOpen] || []).map((e) => html`<div key=${e.type + e.id} style=${{ display: "grid", gap: 2 }}><${EventChip} e=${e} />${e.person_id && html`<${Muted}>${EVENT_TYPES[e.type].label} · ${userName(e.person_id)}<//>`}</div>`)}
+      <//>
     <//>`;
   }
 
@@ -834,7 +931,7 @@
       { name: "email", label: "Email (used to sign in)", type: "email", required: true },
       { name: "job_title", label: "Job title", type: "text" },
       { name: "role", label: "Role", type: "select", options: META.role, default: "member", required: true, hint: "Members do the work · Managers also see finance and approve spending · Admins also manage people and settings." },
-      { name: "password", label: item ? "New password" : "Temporary password", type: "password", required: !item, autoComplete: "new-password", hint: item ? "Leave empty to keep their current password. Setting one signs them out everywhere." : "At least 10 characters with a number. Share it privately; they can change it under My account." },
+      { name: "password", label: item ? "New password" : "Temporary password", type: "password", required: !item, autoComplete: "new-password", hint: item ? "Leave empty to keep their current password. Setting one signs them out and they'll choose a new one at next sign-in." : "At least 10 characters with a number. Share it privately — they'll choose their own when they first sign in." },
       ...(item ? [{ name: "active", label: "Active", type: "checkbox", hint: "Inactive people can't sign in" }] : []),
     ];
     return html`<${Fragment}>
@@ -848,8 +945,10 @@
             { key: "status", header: "Status", hideOnMobile: true, render: (u) => (u.active ? html`<${Badge} tone="success" dot>Active<//>` : html`<${Badge} dot>Inactive<//>`) },
           ]} /><//>
         ${admin && html`<${Loaded} res=${settings}>${(s) => html`<${SettingsCard} initial=${s} onSaved=${(v) => { setCompany(v.company_name); settings.reload(); toast("Settings saved"); }} />`}<//>`}
-        ${admin && html`<${Section} title="Backups" description="Everything lives in one folder on the computer running the workspace.">
-          <p style=${{ margin: 0, fontSize: 13.5 }}>Copy the <code>data</code> folder (inside the workspace folder) to a USB drive or cloud storage regularly — weekly at least. To restore, stop the workspace, put the folder back, and start it again.</p>
+        ${admin && html`<${Section} title="Backups" description=${settings.data && settings.data.last_backup_at ? `Last downloaded ${fmt.relative(settings.data.last_backup_at)}.` : "No backup downloaded yet."}
+          actions=${html`<a href="/api/backup" download onClick=${() => setTimeout(settings.reload, 1500)} style=${{ display: "inline-flex", alignItems: "center", gap: 8, height: 36, padding: "0 14px", borderRadius: 8, background: "var(--primary)", color: "var(--primary-fg)", textDecoration: "none", fontSize: 13.5, fontWeight: 500 }}><${Icon} name="download" />Download backup</a>`}>
+          <p style=${{ margin: 0, fontSize: 13.5 }}>The backup is a .zip of everything: the database and all uploaded files. Keep copies somewhere safe (cloud storage or a USB drive), at least once a week.</p>
+          <p style=${{ margin: "8px 0 0", fontSize: 13, color: "var(--muted-fg)" }}>To restore: stop the workspace, unzip the backup inside the workspace folder (replacing the <code>data</code> folder), and start it again.</p>
         <//>`}
       </div>
       <${FormModal} open=${Boolean(editing)} onClose=${() => setEditing(null)} title=${item ? `Edit ${item.name}` : "Add a person"} fields=${fields} initial=${item ? { ...item, active: Boolean(item.active) } : null} submitLabel=${item ? "Save" : "Add person"}
@@ -1012,10 +1111,144 @@
     <//>`;
   }
 
+  function NewPasswordScreen({ company, user, onDone, onSignOut }) {
+    const f = useAuthForm({ current: "", next: "", confirm: "" }, async (v, setErrors) => {
+      if (v.next !== v.confirm) {
+        setErrors({ confirm: "The passwords don't match." });
+        return;
+      }
+      await api("POST", "/api/auth/password", { current: v.current, next: v.next });
+      await onDone();
+    });
+    return html`<${AuthFrame} company=${company} title=${`Welcome, ${user.name.split(" ")[0]}`} subtitle="You signed in with a temporary password. Choose your own to continue — only you will know it.">
+      <form onSubmit=${f.submit} style=${{ display: "grid", gap: 12 }}>
+        <${Field} id="current" label="Temporary password" error=${f.errors.current}><${TextInput} id="current" type="password" autoComplete="current-password" value=${f.v.current} onChange=${f.set("current")} /><//>
+        <${Field} id="next" label="New password" error=${f.errors.next} hint="At least 10 characters, with letters and a number."><${TextInput} id="next" type="password" autoComplete="new-password" value=${f.v.next} onChange=${f.set("next")} /><//>
+        <${Field} id="confirm" label="Confirm new password" error=${f.errors.confirm}><${TextInput} id="confirm" type="password" autoComplete="new-password" value=${f.v.confirm} onChange=${f.set("confirm")} /><//>
+        <${Alert}>${f.error && !Object.keys(f.errors).length ? f.error : ""}<//>
+        <${Button} type="submit" variant="primary" size="lg" disabled=${f.busy}>${f.busy ? "Saving…" : "Save and continue"}<//>
+      </form>
+      <button onClick=${onSignOut} style=${{ background: "none", border: 0, color: "var(--muted-fg)", cursor: "pointer", fontSize: 13 }}>Sign out</button>
+    <//>`;
+  }
+
+  // ─────────────────────────── Search ───────────────────────────
+  const RESULT_TYPES = {
+    task: { label: "Tasks", icon: "list-checks", href: (r) => `#/tasks?task=${r.id}`, meta: (r) => html`<${StatusBadge} meta=${META.taskStatus} value=${r.status} />` },
+    lead: { label: "Schools", icon: "school", href: (r) => `#/pipeline?lead=${r.id}`, meta: (r) => html`<${StatusBadge} meta=${META.leadStage} value=${r.status} />` },
+    content: { label: "Content", icon: "video", href: (r) => `#/content?item=${r.id}`, meta: (r) => html`<${StatusBadge} meta=${META.contentStage} value=${r.status} />` },
+    meeting: { label: "Meetings", icon: "notebook-pen", href: (r) => `#/meetings?meeting=${r.id}`, meta: (r) => html`<${Muted}>${fmt.date(r.date)}<//>` },
+    document: { label: "Documents", icon: "file-text", href: (r) => `/api/documents/${r.id}/file?inline=1`, external: true },
+    approval: { label: "Approvals", icon: "circle-check", href: () => "#/approvals", meta: (r) => html`<${StatusBadge} meta=${META.approval} value=${r.status} />` },
+    transaction: { label: "Transactions", icon: "receipt", href: () => "#/finance", meta: (r) => html`<span class="tabular" style=${{ fontSize: 13 }}>${fmt.zar(r.amount)}</span>` },
+    person: { label: "People", icon: "users", href: () => "#/team" },
+  };
+  function SearchDialog({ open, onClose }) {
+    const [q, setQ] = useState("");
+    const [results, setResults] = useState(null);
+    const [resultsFor, setResultsFor] = useState("");
+    const [active, setActive] = useState(0);
+    const inputRef = useRef(null);
+    const pendingEnter = useRef(false);
+    useEffect(() => {
+      if (!open) return;
+      setQ("");
+      setResults(null);
+      setResultsFor("");
+      pendingEnter.current = false;
+      setActive(0);
+      setTimeout(() => inputRef.current && inputRef.current.focus(), 0);
+    }, [open]);
+    useEffect(() => {
+      if (q.trim().length < 2) {
+        setResults(null);
+        return undefined;
+      }
+      let live = true;
+      const t = setTimeout(() => {
+        api("GET", `/api/search?q=${encodeURIComponent(q.trim())}`)
+          .then((r) => {
+            if (live) {
+              setResults(r);
+              setResultsFor(q.trim());
+              setActive(0);
+            }
+          })
+          .catch(() => {
+            if (live) {
+              setResults([]);
+              setResultsFor(q.trim());
+            }
+          });
+      }, 180);
+      return () => {
+        live = false;
+        clearTimeout(t);
+      };
+    }, [q]);
+    const choose = (r) => {
+      const t = RESULT_TYPES[r.type];
+      onClose();
+      if (t.external) window.open(t.href(r), "_blank", "noopener");
+      else window.location.hash = t.href(r);
+    };
+    // Enter pressed before the results for the latest typing arrived opens the first fresh result.
+    useEffect(() => {
+      if (pendingEnter.current && results && resultsFor === q.trim()) {
+        pendingEnter.current = false;
+        if (results.length) choose(results[0]);
+      }
+    }, [results, resultsFor]); // eslint-disable-line react-hooks/exhaustive-deps
+    const onKey = (e) => {
+      if (e.key === "Enter" && q.trim().length >= 2 && resultsFor !== q.trim()) {
+        e.preventDefault();
+        pendingEnter.current = true;
+        return;
+      }
+      if (!results || !results.length) return;
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setActive((a) => Math.min(results.length - 1, a + 1));
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setActive((a) => Math.max(0, a - 1));
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        choose(results[active]);
+      }
+    };
+    const groups = [];
+    (results || []).forEach((r, i) => {
+      const last = groups[groups.length - 1];
+      if (last && last.type === r.type) last.items.push([r, i]);
+      else groups.push({ type: r.type, items: [[r, i]] });
+    });
+    return html`<${Modal} open=${open} onClose=${onClose} title="Search the workspace" width=${620}>
+      <div style=${{ position: "relative" }}>
+        <span style=${{ position: "absolute", left: 12, top: 11, color: "var(--muted-fg)" }}><${Icon} name="search" size=${16} /></span>
+        <input ref=${inputRef} type="search" aria-label="Search" placeholder="Tasks, schools, content, meetings, documents, people…" value=${q} onInput=${(e) => setQ(e.target.value)} onKeyDown=${onKey}
+          style=${{ width: "100%", height: 40, padding: "0 12px 0 36px", borderRadius: 10, border: "1px solid var(--input)", background: "var(--card)", color: "var(--fg)", fontSize: 14 }} />
+      </div>
+      ${q.trim().length < 2 ? html`<${Muted}>Type at least two letters. Use ↑ ↓ and Enter to open a result.<//>`
+        : !results ? html`<${Muted}>Searching…<//>`
+        : results.length === 0 ? html`<${EmptyState} icon="search" title="No matches" description=${`Nothing found for “${q.trim()}”.`} />`
+        : html`<div role="listbox" aria-label="Results" style=${{ display: "grid", gap: 12, maxHeight: "55vh", overflowY: "auto" }}>${groups.map((g) => html`<div key=${g.type}>
+            <div style=${{ fontSize: 11, fontWeight: 600, letterSpacing: ".1em", textTransform: "uppercase", color: "var(--muted-fg)", margin: "0 0 4px 4px" }}>${RESULT_TYPES[g.type].label}</div>
+            ${g.items.map(([r, i]) => html`<button key=${r.type + r.id} role="option" aria-selected=${i === active} onMouseEnter=${() => setActive(i)} onClick=${() => choose(r)}
+              style=${{ display: "flex", alignItems: "center", gap: 10, width: "100%", textAlign: "left", padding: "8px 10px", borderRadius: 8, border: 0, cursor: "pointer", background: i === active ? "var(--accent)" : "transparent", color: "var(--fg)" }}>
+              <span style=${{ color: "var(--muted-fg)", display: "inline-flex" }}><${Icon} name=${RESULT_TYPES[r.type].icon} size=${16} /></span>
+              <span style=${{ flex: 1, minWidth: 0 }}><span style=${{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>${r.title}</span>${r.sub && html`<${Muted}>${r.type === "content" ? META.contentType[r.sub]?.label || r.sub : r.sub}<//>`}</span>
+              ${RESULT_TYPES[r.type].meta && RESULT_TYPES[r.type].meta(r)}
+            </button>`)}
+          </div>`)}</div>`}
+    <//>`;
+  }
+
   // ─────────────────────────── Shell ───────────────────────────
   const ROUTES = [
     { group: "Work", path: "dashboard", label: "Dashboard", icon: "layout-dashboard", view: DashboardView },
     { group: "Work", path: "tasks", label: "Tasks", icon: "list-checks", view: TasksView },
+    { group: "Work", path: "calendar", label: "Calendar", icon: "calendar-days", view: CalendarView },
     { group: "Work", path: "pipeline", label: "Schools pipeline", icon: "school", view: PipelineView },
     { group: "Work", path: "content", label: "Content", icon: "video", view: ContentView },
     { group: "Money", path: "finance", label: "Finance", icon: "wallet", view: FinanceView, minRole: "manager" },
@@ -1030,7 +1263,38 @@
     const { user, company } = app;
     const [route, setRoute] = useState(parseHash);
     const [menuOpen, setMenuOpen] = useState(false);
+    const [searchOpen, setSearchOpen] = useState(false);
+    const [counts, setCounts] = useState({});
     const [, force] = useState(0);
+    // Badge counts: refreshed on navigation, after any change, and every minute.
+    useEffect(() => {
+      let timer = null;
+      const load = () => api("GET", "/api/counts").then(setCounts).catch(() => {});
+      const soon = () => {
+        clearTimeout(timer);
+        timer = setTimeout(load, 300);
+      };
+      load();
+      const every = setInterval(load, 60000);
+      window.addEventListener("ws:changed", soon);
+      return () => {
+        clearInterval(every);
+        clearTimeout(timer);
+        window.removeEventListener("ws:changed", soon);
+      };
+    }, [route.path]);
+    useEffect(() => {
+      const onKey = (e) => {
+        const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement && document.activeElement.tagName);
+        if ((e.key === "k" && (e.ctrlKey || e.metaKey)) || (e.key === "/" && !typing)) {
+          e.preventDefault();
+          setSearchOpen(true);
+        }
+      };
+      window.addEventListener("keydown", onKey);
+      return () => window.removeEventListener("keydown", onKey);
+    }, []);
+    const badges = { tasks: counts.myOpenTasks, approvals: counts.approvalsToDecide };
     useEffect(() => {
       const on = () => {
         setRoute(parseHash());
@@ -1061,7 +1325,7 @@
         <nav class="nav">
           ${groups.map((g) => html`<div key=${g}>
             <div class="nav-group-label">${g}</div>
-            ${allowed.filter((r) => r.group === g).map((r) => html`<a key=${r.path} class="nav-link" href=${`#/${r.path}`} aria-current=${route.path === r.path ? "page" : undefined}><${Icon} name=${r.icon} size=${17} />${r.label}</a>`)}
+            ${allowed.filter((r) => r.group === g).map((r) => html`<a key=${r.path} class="nav-link" href=${`#/${r.path}`} aria-current=${route.path === r.path ? "page" : undefined}><${Icon} name=${r.icon} size=${17} />${r.label}${badges[r.path] ? html`<span class="nav-badge" title=${r.path === "tasks" ? `${badges.tasks} open tasks assigned to you${counts.myOverdueTasks ? `, ${counts.myOverdueTasks} overdue` : ""}` : `${badges.approvals} waiting for your decision`} style=${r.path === "tasks" && counts.myOverdueTasks ? { background: "var(--danger)", color: "#fff" } : undefined}>${badges[r.path]}</span>` : null}</a>`)}
           </div>`)}
         </nav>
         <div style=${{ borderTop: "1px solid var(--sidebar-border)", padding: 12, display: "flex", alignItems: "center", gap: 10 }}>
@@ -1077,6 +1341,9 @@
           <${Button} className="mobile-only" variant="ghost" icon="menu" ariaLabel="Open menu" onClick=${() => setMenuOpen(true)} />
           <strong style=${{ fontSize: 14, fontWeight: 600 }}>${current ? current.label : ""}</strong>
           <span style=${{ flex: 1 }} />
+          <button onClick=${() => setSearchOpen(true)} aria-label="Search (Ctrl+K)" class="search-trigger">
+            <${Icon} name="search" size=${15} /><span class="hide-sm">Search…</span><kbd class="hide-sm">${/Mac|iPhone|iPad/.test(navigator.platform) ? "⌘ K" : "Ctrl K"}</kbd>
+          </button>
           <${Button} variant="ghost" icon=${isDark() ? "sun" : "moon"} ariaLabel=${isDark() ? "Switch to light theme" : "Switch to dark theme"} title="Toggle theme" onClick=${toggleTheme} />
           <a href="#/profile" aria-label="My account" style=${{ display: "inline-flex" }}><${Avatar} name=${user.name} size=${30} /></a>
         </header>
@@ -1084,6 +1351,7 @@
           ${View ? html`<${View} key=${route.path} params=${route.params} />` : html`<${Card} style=${{ maxWidth: 560, margin: "40px auto" }}><${EmptyState} icon="lock" title="Page not found" description="It may have moved, or your role doesn't include it." action=${html`<a href="#/dashboard" style=${{ marginTop: 8, color: "var(--primary)", fontWeight: 500 }}>Back to the dashboard</a>`} /><//>`}
         </main>
       </div>
+      <${SearchDialog} open=${searchOpen} onClose=${() => setSearchOpen(false)} />
     </div>`;
   }
 
@@ -1110,9 +1378,10 @@
       window.addEventListener("ws:signed-out", out);
       return () => window.removeEventListener("ws:signed-out", out);
     }, [loadStatus]);
+    const readyKey = status && status.user && !status.user.must_change_password ? status.user.id : null;
     useEffect(() => {
-      if (status && status.user) reloadUsers();
-    }, [status && status.user && status.user.id]); // eslint-disable-line react-hooks/exhaustive-deps
+      if (readyKey) reloadUsers();
+    }, [readyKey, reloadUsers]);
     const ctx = useMemo(() => {
       if (!status || !status.user) return null;
       const byId = new Map(users.map((u) => [u.id, u]));
@@ -1136,6 +1405,7 @@
     else if (status.error) body = html`<div id="boot"><div>Can't reach the workspace server.<br />${status.error}<br /><br /><${Button} onClick=${loadStatus}>Try again<//></div></div>`;
     else if (status.setupRequired) body = html`<${SetupScreen} onDone=${loadStatus} />`;
     else if (!status.user) body = html`<${LoginScreen} company=${status.company} onSignedIn=${loadStatus} />`;
+    else if (status.user.must_change_password) body = html`<${NewPasswordScreen} company=${status.company} user=${status.user} onDone=${loadStatus} onSignOut=${signOut} />`;
     else body = html`<${AppContext.Provider} value=${ctx}><${Shell} onSignOut=${signOut} /><//>`;
     return html`${body}
       <div class="toast-stack" aria-live="polite">${toasts.map((t) => html`<div key=${t.id} role="status" style=${{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", borderRadius: 10, background: "var(--card)", border: "1px solid var(--border)", borderLeft: `4px solid ${t.tone === "danger" ? "var(--danger)" : "var(--success)"}`, boxShadow: "0 8px 24px rgb(0 0 0 / .18)", fontSize: 13.5 }}><${Icon} name=${t.tone === "danger" ? "triangle-alert" : "check"} size=${16} />${t.message}</div>`)}</div>`;
