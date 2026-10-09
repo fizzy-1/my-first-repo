@@ -27,3 +27,6 @@ next-env.d.ts
 .DS_Store
 *.pem
 npm-debug.log*
+
+# downloadable Workspace Lite package (build with: git archive --format=zip --prefix=integral-workspace/ -o integral-workspace.zip HEAD:workspace-lite)
+integral-workspace.zip
