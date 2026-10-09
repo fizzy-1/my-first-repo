@@ -1042,7 +1042,7 @@
   function AuthFrame({ company, title, subtitle, children }) {
     return html`<main class="auth"><div class="auth-card">
       <div style=${{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10, marginBottom: 20, textAlign: "center" }}>
-        <span class="crest" style=${{ width: 64, height: 64, borderRadius: 16 }}><img src="/crest.png" alt="" /></span>
+        <span class="crest" style=${{ width: 64, height: 64, borderRadius: 16 }}><img src="crest.png" alt="" /></span>
         <div style=${{ fontFamily: "var(--display)", fontWeight: 700, letterSpacing: ".08em", fontSize: 18 }}>${(company || "Integral Academy").toUpperCase()}</div>
       </div>
       <${Card} style=${{ padding: 24, display: "grid", gap: 16 }}>
@@ -1318,7 +1318,7 @@
     return html`<div class="app">
       <aside class=${`sidebar${menuOpen ? " open" : ""}`} aria-label="Main navigation">
         <div class="brand">
-          <span class="crest"><img src="/crest.png" alt="" /></span>
+          <span class="crest"><img src="crest.png" alt="" /></span>
           <div style=${{ minWidth: 0 }}><div class="brand-name">${company.toUpperCase()}</div><div class="brand-sub">Team workspace</div></div>
           <button class="mobile-only" aria-label="Close menu" onClick=${() => setMenuOpen(false)} style=${{ marginLeft: "auto", background: "none", border: 0, color: "var(--sidebar-fg)", cursor: "pointer" }}><${Icon} name="x" /></button>
         </div>
@@ -1376,7 +1376,11 @@
       loadStatus();
       const out = () => setStatus((s) => (s && s.user ? { ...s, user: null } : s));
       window.addEventListener("ws:signed-out", out);
-      return () => window.removeEventListener("ws:signed-out", out);
+      window.addEventListener("ws:refresh", loadStatus); // lets the online preview switch accounts
+      return () => {
+        window.removeEventListener("ws:signed-out", out);
+        window.removeEventListener("ws:refresh", loadStatus);
+      };
     }, [loadStatus]);
     const readyKey = status && status.user && !status.user.must_change_password ? status.user.id : null;
     useEffect(() => {
@@ -1406,7 +1410,7 @@
     else if (status.setupRequired) body = html`<${SetupScreen} onDone=${loadStatus} />`;
     else if (!status.user) body = html`<${LoginScreen} company=${status.company} onSignedIn=${loadStatus} />`;
     else if (status.user.must_change_password) body = html`<${NewPasswordScreen} company=${status.company} user=${status.user} onDone=${loadStatus} onSignOut=${signOut} />`;
-    else body = html`<${AppContext.Provider} value=${ctx}><${Shell} onSignOut=${signOut} /><//>`;
+    else body = html`<${AppContext.Provider} value=${ctx}><${Shell} key=${status.user.id} onSignOut=${signOut} /><//>`;
     return html`${body}
       <div class="toast-stack" aria-live="polite">${toasts.map((t) => html`<div key=${t.id} role="status" style=${{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", borderRadius: 10, background: "var(--card)", border: "1px solid var(--border)", borderLeft: `4px solid ${t.tone === "danger" ? "var(--danger)" : "var(--success)"}`, boxShadow: "0 8px 24px rgb(0 0 0 / .18)", fontSize: 13.5 }}><${Icon} name=${t.tone === "danger" ? "triangle-alert" : "check"} size=${16} />${t.message}</div>`)}</div>`;
   }

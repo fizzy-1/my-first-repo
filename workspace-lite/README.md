@@ -96,6 +96,12 @@ All settings are optional environment variables:
 - Passwords set by an admin are temporary. The person must choose their own at their next sign-in, so the admin never knows it.
 - If someone forgets their password, an admin sets a new temporary one under **Team & settings**.
 
+## Online preview
+
+`preview/` holds a version of the app that runs entirely in a web browser, for showing people the workspace without installing anything. It uses the same screens as the real app with demo data. A stand-in for the server (`preview/mock-api.js`) answers requests inside the browser and follows the same permission rules. A "Preview" bar lets you switch between the demo accounts, reset the data, or start empty to see first-time setup. Changes stay in that browser only, and files can be viewed but not downloaded.
+
+To rebuild the preview page after changing `public/index.html`, run `node preview/build.mjs`.
+
 ## How it's built
 
 - `server.js`: the HTTP server and the whole API, including validation and permission rules.
