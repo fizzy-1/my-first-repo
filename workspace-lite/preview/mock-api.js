@@ -4,7 +4,8 @@
  * Permission rules mirror server.js. Also adds a small "Preview" bar for switching between demo accounts. */
 (function () {
   "use strict";
-  const STORE_KEY = "integral-workspace-lite-preview-v2";
+  const STORE_KEY = "integral-workspace-lite-preview-v3";
+  const M = window.WSMetrics;
   window.WS_PREVIEW = true;
   const DEMO_PASSWORD = "integral-demo-2026";
   const MAX_UPLOAD = 2 * 1024 * 1024;
@@ -43,13 +44,16 @@
     documents: { folder: "General", private: 0, uploaded_by: null },
     activity: { user_id: null, audience: "all" },
     notifications: { link: null, read_at: null },
+    contracts: { learners: null, status: "active", notes: null, end_reason: null, renewed_to: null, reminded_60: 0, reminded_30: 0, created_by: null },
+    goals: { metric: "manual", baseline: 0, current_value: 0, unit: null, owner_id: null, notes: null, archived: 0, created_by: null },
+    goal_updates: { note: null, author_id: null },
   };
   const TABLES = Object.keys(DEFAULTS);
   let db;
   const files = {}; // storage_key → { kind: "text" | "dataurl", data }
 
   function emptyDb() {
-    const out = { seq: {}, settings: {}, session: null, files: {} };
+    const out = { seq: {}, settings: {}, session: null, files: {}, budgets: [] };
     for (const t of TABLES) out[t] = [];
     return out;
   }
@@ -94,129 +98,27 @@
     }
   }
 
-  // ─────────────────────────── Demo data (same story as seed.js) ───────────────────────────
+  // ─────────────────────────── Demo data (preview/demo-data.js, the same story seed.js uses) ───────────────────────────
   function seed() {
     db = emptyDb();
     for (const k of Object.keys(files)) delete files[k];
-    let state = 7;
-    const rand = () => (state = (state * 16807) % 2147483647) / 2147483647;
-    const vary = (base, spread) => Math.round((base + (rand() - 0.5) * 2 * spread) / 10) * 10;
-    const people = [
-      ["Sipho Dlamini", "sipho@integralacademy.co.za", "admin", "Founder & CEO"],
-      ["Ayesha Patel", "ayesha@integralacademy.co.za", "manager", "Operations & Finance"],
-      ["Johan van der Merwe", "johan@integralacademy.co.za", "manager", "Head of Content"],
-      ["Nomvula Khumalo", "nomvula@integralacademy.co.za", "member", "Maths Teacher & Presenter"],
-      ["Kagiso Mokoena", "kagiso@integralacademy.co.za", "member", "School Partnerships"],
-    ];
-    const [sipho, ayesha, johan, nomvula, kagiso] = people.map(([name, email, role, job_title]) => insert("users", { name, email, role, job_title, password: DEMO_PASSWORD }).id);
-    setSetting("company_name", "Integral Academy");
-    setSetting("opening_balance", "650000");
-    setSetting("opening_date", monthDay(12, 1));
-
-    for (let m = 11; m >= 0; m--) {
-      const growth = (11 - m) / 11;
-      const tx = (kind, d, amount, category, description, counterparty) => insert("transactions", { kind, date: monthDay(m, d), amount, category, description, counterparty, created_by: ayesha });
-      tx("expense", 25, 78000 + Math.round(growth * 14) * 1000, "Salaries", "Monthly salaries", "Team payroll");
-      tx("expense", 1, 6500, "Rent", "Co-working desks", "Workshop17 Rosebank");
-      tx("expense", 3, vary(3900, 300), "Software", "Video hosting, Google Workspace and Zoom", "Various");
-      tx("expense", 10, vary(7000 + growth * 5000, 1500), "Marketing", "Social ads for learner sign-ups", "Meta Ads");
-      tx("expense", 18, vary(2600, 900), "Travel", "School visits", "Fuel & Uber");
-      if (m % 4 === 2) tx("expense", 14, vary(14000, 4000), "Equipment", "Recording equipment", "Takealot");
-      tx("income", 5, vary(18000 + growth * 52000, 3000), "School contracts", "Monthly school licences", "Partner schools");
-      tx("income", 28, vary(6000 + growth * 21000, 1500), "Learner subscriptions", "Learner subscriptions", "PayFast payouts");
-      if (m === 7) tx("income", 12, 150000, "Grants", "Innovation grant (first tranche)", "Edtech innovation fund");
+    const demo = window.WSDemoData.buildDemoData();
+    for (const [table, rows] of Object.entries(demo.tables)) {
+      if (table === "documents") continue;
+      db[table] = rows.map((r) => ({ ...r }));
+      db.seq[table] = rows.length;
     }
-
-    const leads = [
-      ["Thuto-Lesedi Secondary School", "Mr T. Molefe", "Soweto", "won", 48000, 160, null, kagiso],
-      ["Umlazi Comprehensive High", "Ms N. Zulu", "Durban", "won", 36000, 120, null, kagiso],
-      ["Mamelodi Science Academy", "Dr P. Mahlangu", "Pretoria", "proposal", 54000, 180, day(2), kagiso],
-      ["Gugulethu Senior Secondary", "Mr S. Ndlovu", "Cape Town", "meeting", 30000, 95, day(4), sipho],
-      ["Tembisa High School", "Mrs L. Sithole", "Tembisa", "contacted", 42000, 140, day(-1), kagiso],
-      ["Hillcrest Academy", "Mr R. Naidoo", "Pietermaritzburg", "contacted", 27000, 90, day(6), ayesha],
-      ["Polokwane Maths Centre", "Ms K. Mabaso", "Polokwane", "lead", 24000, 80, day(10), kagiso],
-      ["Mthatha Technical High", null, "Mthatha", "lead", 33000, 110, null, kagiso],
-      ["Eastgate Girls' College", "Mrs A. Botha", "Bloemfontein", "lost", 21000, 70, null, sipho],
-      ["Rustenburg Secondary", "Mr J. Kekana", "Rustenburg", "proposal", 39000, 130, day(1), sipho],
-    ];
-    const leadIds = leads.map(([school, contact_name, city, stage, value, learners, next_follow_up, owner_id]) =>
-      insert("leads", { school, contact_name, contact_email: contact_name ? `principal@${school.toLowerCase().replace(/[^a-z]+/g, "").slice(0, 16)}.school.za` : null, city, stage, value, learners, next_follow_up, owner_id, won_at: stage === "won" ? `${school.startsWith("Thuto") ? monthDay(2, 14) : day(-6)}T09:00:00.000Z` : null }).id,
-    );
-    insert("lead_notes", { lead_id: leadIds[2], body: "Visited the school. HOD loved the past-paper walkthroughs; asked for a quote for 180 learners.", author_id: kagiso });
-    insert("lead_notes", { lead_id: leadIds[2], body: "Proposal sent: R54 000 per year including teacher dashboard access.", author_id: kagiso });
-    insert("lead_notes", { lead_id: leadIds[4], body: "Principal is keen but needs SGB approval at the next meeting.", author_id: kagiso });
-    insert("lead_notes", { lead_id: leadIds[8], body: "They chose a cheaper print-based programme this year. Try again in October.", author_id: sipho });
-
-    const content = [
-      ["Calculus: first principles", "video", "Calculus", "published", johan, day(-20)],
-      ["Functions and inverses walkthrough", "video", "Functions", "published", nomvula, day(-12)],
-      ["2024 Paper 1 — full memo", "past_paper", "Exam prep", "review", nomvula, day(2)],
-      ["Trigonometry identities worksheet", "worksheet", "Trigonometry", "editing", nomvula, day(5)],
-      ["Probability: Venn diagrams", "lesson", "Probability", "recording", johan, day(7)],
-      ["Sequences and series quiz", "quiz", "Sequences", "idea", nomvula, day(14)],
-      ["Analytical geometry: circles", "video", "Analytical geometry", "idea", johan, day(21)],
-      ["Financial maths in 15 minutes", "video", "Finance", "editing", nomvula, day(-2)],
-    ];
-    for (const [title, type, topic, stage, owner_id, due_date] of content) insert("content", { title, type, topic, stage, owner_id, due_date, published_at: stage === "published" ? `${due_date}T12:00:00.000Z` : null });
-
-    const weekly = insert("meetings", {
-      title: "Weekly team check-in", date: day(-3), attendees: "Sipho, Ayesha, Johan, Nomvula, Kagiso",
-      notes: "Exam season is 6 weeks away. Learner sign-ups up 18% after the TikTok series. Two schools are waiting on proposals.",
-      decisions: "Prioritise past-paper memos over new topics until exams\nKagiso to focus on proposals for Mamelodi and Rustenburg\nKeep marketing spend flat this month", created_by: sipho,
-    }).id;
-    const review = insert("meetings", {
-      title: "Monthly finance review", date: day(-10), attendees: "Sipho, Ayesha",
-      notes: "Burn is coming down as school licences grow. Grant second tranche depends on the impact report.",
-      decisions: "Submit impact report by month end\nNo new hires until two more schools sign", created_by: ayesha,
-    }).id;
-    insert("meetings", { title: "Content planning: exam sprint", date: day(3), attendees: "Johan, Nomvula", notes: "", decisions: "", created_by: johan });
-
-    const tasks = [
-      ["Send Mamelodi proposal follow-up", kagiso, day(2), "high", "todo", { lead_id: leadIds[2], meeting_id: weekly }],
-      ["Prepare Rustenburg proposal", kagiso, day(1), "high", "doing", { lead_id: leadIds[9], meeting_id: weekly }],
-      ["Record 2024 Paper 1 memo intro", nomvula, day(-1), "medium", "todo", { meeting_id: weekly }],
-      ["Write grant impact report", ayesha, day(9), "high", "doing", { meeting_id: review }],
-      ["Reconcile last month's bank statement", ayesha, day(-2), "medium", "todo", { recurrence: "monthly" }],
-      ["Post weekly exam tips on social media", johan, day(1), "medium", "todo", { recurrence: "weekly" }],
-      ["Review trig worksheet draft", johan, day(3), "medium", "todo", {}],
-      ["Update pricing sheet for next year", sipho, day(12), "low", "todo", {}],
-      ["Call Tembisa High about SGB decision", kagiso, day(-1), "medium", "todo", { lead_id: leadIds[4] }],
-      ["Order second microphone", johan, day(-6), "low", "done", {}],
-      ["Publish functions walkthrough", nomvula, day(-12), "medium", "done", {}],
-    ];
-    for (const [title, assignee_id, due_date, priority, status, extra] of tasks)
-      insert("tasks", { title, assignee_id, due_date, priority, status, created_by: sipho, completed_at: status === "done" ? nowIso() : null, ...extra });
-
-    insert("approvals", { title: "Ring light and backdrop for recordings", details: "Our current lighting makes the board hard to read on phones.", amount: 3800, requested_by: nomvula });
-    insert("approvals", { title: "Travel to Polokwane for school visits", details: "Two-day trip to meet three schools in Limpopo.", amount: 5200, requested_by: kagiso });
-    insert("approvals", { title: "Canva Pro for the team", amount: 2400, status: "approved", requested_by: johan, decided_by: ayesha, decision_note: "Approved — annual plan please.", decided_at: new Date(Date.now() - 5 * 86400000).toISOString() });
-    insert("approvals", { title: "Billboard near Bree taxi rank", amount: 45000, status: "rejected", requested_by: kagiso, decided_by: sipho, decision_note: "Too expensive for now. Let's revisit after the grant's second tranche.", decided_at: new Date(Date.now() - 12 * 86400000).toISOString() });
-
-    const doc = (title, folder, file_name, mime_type, body, uploaded_by, isPrivate = 0) => {
-      const key = `seed-${db.seq.documents || 0}-${file_name}`;
+    db.users = db.users.map((u) => ({ ...u, password: DEMO_PASSWORD }));
+    db.documents = demo.tables.documents.map(({ body, ...d }) => {
+      const key = `seed-${d.id}-${d.file_name}`;
       files[key] = { kind: "text", data: body };
-      insert("documents", { title, folder, file_name, mime_type, size: new Blob([body]).size, storage_key: key, private: isPrivate, uploaded_by });
-    };
-    doc("Team handbook", "Policies", "team-handbook.txt", "text/plain", "Integral Academy team handbook\n\n1. We put learners first.\n2. Spending over R1 000 needs approval in the workspace.\n3. Meeting decisions and action items go in Meetings.\n", sipho);
-    doc("Next year's school pricing", "Sales", "school-pricing.csv", "text/csv", "Learners,Price per year (R)\nUp to 100,24000\n101-200,42000\n201+,54000\n", sipho);
-    doc("Grant agreement summary", "Finance", "grant-agreement-summary.txt", "text/plain", "Innovation grant: R300 000 in two tranches. Second tranche on approval of the impact report.\n", ayesha, 1);
-
-    const note = (user_id, message, link, read = false) => insert("notifications", { user_id, message, link, read_at: read ? nowIso() : null });
-    for (const manager of [sipho, ayesha, johan]) {
-      note(manager, "Nomvula Khumalo asked for approval: “Ring light and backdrop for recordings” (R3 800)", "approvals");
-      note(manager, "Kagiso Mokoena asked for approval: “Travel to Polokwane for school visits” (R5 200)", "approvals");
-    }
-    note(sipho, "Kagiso Mokoena added a note on Mamelodi Science Academy", `pipeline?lead=${leadIds[2]}`, true);
-    note(nomvula, "Sipho Dlamini assigned you “Record 2024 Paper 1 memo intro”", "tasks");
-    note(kagiso, "Sipho Dlamini assigned you “Send Mamelodi proposal follow-up”", "tasks");
-    note(kagiso, "Sipho Dlamini rejected your request “Billboard near Bree taxi rank”: “Too expensive for now.”", "approvals", true);
-    note(johan, "Ayesha Patel approved your request “Canva Pro for the team”", "approvals", true);
-
-    logActivity(sipho, "Sipho Dlamini set up the workspace");
-    logActivity(kagiso, "Kagiso Mokoena added a note on Mamelodi Science Academy");
-    logActivity(ayesha, "Ayesha Patel approved “Canva Pro for the team”", "manager");
-    logActivity(nomvula, "Nomvula Khumalo updated content “Financial maths in 15 minutes”");
-    db.session = sipho; // open signed in as the founder, so the first view shows the workspace
+      return { ...d, storage_key: key, size: new Blob([body]).size };
+    });
+    db.seq.documents = db.documents.length;
+    db.settings = { ...demo.settings };
+    db.budgets = demo.budgets.map((b) => ({ ...b }));
+    db.session = demo.ids.sipho; // open signed in as the founder, so the first view shows the workspace
+    checkRenewals();
   }
 
   // ─────────────────────────── Rules shared with server.js ───────────────────────────
@@ -344,6 +246,7 @@
       canDelete: (user) => atLeast(user, "manager"),
       onDelete: (row) => {
         db.lead_notes = db.lead_notes.filter((n) => n.lead_id !== row.id);
+        db.contracts = db.contracts.filter((c) => c.lead_id !== row.id);
         for (const t of db.tasks) if (t.lead_id === row.id) t.lead_id = null;
       },
     },
@@ -412,7 +315,61 @@
       canEdit: (user, row) => row.requested_by === user.id && row.status === "pending",
       canDelete: (user, row) => (row.requested_by === user.id && row.status === "pending") || atLeast(user, "admin"),
     },
+    contracts: {
+      label: (r) => `the contract with ${(byId("leads", r.lead_id) || {}).school || "a school"}`,
+      fields: {
+        lead_id: { type: "int", required: true }, start_date: { type: "date", required: true }, end_date: { type: "date", required: true },
+        annual_value: { type: "money", required: true }, learners: { type: "int" }, notes: { type: "text", max: 2000 },
+      },
+      list: () => contractRows(),
+      beforeCreate: (data, user) => {
+        checkContract(data);
+        return { ...data, created_by: user.id };
+      },
+      afterCreate: (row) => {
+        const lead = byId("leads", row.lead_id);
+        if (lead && lead.stage !== "won") Object.assign(lead, { stage: "won", won_at: lead.won_at || nowIso() });
+      },
+      beforeUpdate: (data, row) => {
+        checkContract({ ...row, ...data });
+        return "end_date" in data && data.end_date !== row.end_date ? { ...data, reminded_60: 0, reminded_30: 0 } : data;
+      },
+      canCreate: (user) => atLeast(user, "manager"),
+      canEdit: (user) => atLeast(user, "manager"),
+      canDelete: (user) => atLeast(user, "manager"),
+    },
+    goals: {
+      label: (r) => `goal “${r.title}”`,
+      fields: {
+        title: { type: "text", required: true, max: 200 }, metric: { type: "enum", values: Object.keys(M.GOAL_METRICS) },
+        target: { type: "money", required: true, positive: true }, baseline: { type: "money" }, unit: { type: "text", max: 40 },
+        start_date: { type: "date", required: true }, due_date: { type: "date", required: true }, owner_id: { type: "user" },
+        notes: { type: "text", max: 2000 }, archived: { type: "bool" },
+      },
+      list: (user) => goalRows(user),
+      beforeCreate: (data, user) => {
+        checkGoalDates(data);
+        return { ...data, baseline: data.baseline ?? 0, owner_id: data.owner_id ?? user.id, created_by: user.id };
+      },
+      beforeUpdate: (data, row) => {
+        checkGoalDates({ ...row, ...data });
+        return data;
+      },
+      onDelete: (row) => {
+        db.goal_updates = db.goal_updates.filter((u) => u.goal_id !== row.id);
+      },
+      canCreate: (user) => atLeast(user, "manager"),
+      canEdit: (user) => atLeast(user, "manager"),
+      canDelete: (user) => atLeast(user, "manager"),
+    },
   };
+  function checkContract(c) {
+    if (!byId("leads", c.lead_id)) throw new HttpError(422, "Choose a school.", { lead_id: "Choose a school." });
+    if (c.end_date <= c.start_date) throw new HttpError(422, "The end date must be after the start date.", { end_date: "Must be after the start date." });
+  }
+  function checkGoalDates(g) {
+    if (g.due_date <= g.start_date) throw new HttpError(422, "The deadline must be after the start date.", { due_date: "Must be after the start date." });
+  }
   const checkLinks = (data) => {
     if (data.meeting_id != null && !byId("meetings", data.meeting_id)) throw new HttpError(422, "A linked record is missing.");
     if (data.lead_id != null && !byId("leads", data.lead_id)) throw new HttpError(422, "A linked record is missing.");
@@ -442,6 +399,48 @@
     const exists = db.tasks.some((t) => t.title === task.title && t.recurrence === task.recurrence && t.status !== "done" && t.due_date === due && t.assignee_id === task.assignee_id);
     if (!exists) insert("tasks", { title: task.title, notes: task.notes, priority: task.priority, assignee_id: task.assignee_id, created_by: task.created_by, recurrence: task.recurrence, due_date: due });
     return due;
+  }
+
+  // ─────────────────────────── Goals, contracts, shared calculations ───────────────────────────
+  const loadData = () => ({
+    transactions: db.transactions, leads: db.leads, contracts: db.contracts, content: db.content, tasks: db.tasks, meetings: db.meetings,
+    users: db.users, leadNotes: db.lead_notes, budgets: db.budgets, openingBalance: Number(getSetting("opening_balance", "0")) || 0,
+  });
+  function contractRows() {
+    const today = localToday();
+    return sortBy(db.contracts, (a, b) => cmp(a.end_date, b.end_date)).map((c) => {
+      const lead = byId("leads", c.lead_id) || {};
+      return { ...c, school: lead.school, city: lead.city, owner_id: lead.owner_id ?? null, state: M.contractState(c, today), days_left: M.daysBetween(today, c.end_date) };
+    });
+  }
+  function goalRows(user) {
+    const data = loadData();
+    const today = localToday();
+    return sortBy(db.goals, (a, b) => a.archived - b.archived, (a, b) => cmp(a.due_date, b.due_date))
+      .filter((g) => atLeast(user, "manager") || !M.GOAL_METRICS[g.metric]?.finance)
+      .map((g) => ({ ...g, progress: M.goalProgress(g, data, today) }));
+  }
+  const shortDate = (date) => new Date(`${date}T00:00:00`).toLocaleDateString("en-ZA", { day: "numeric", month: "short", year: "numeric" });
+  function checkRenewals() {
+    const today = localToday();
+    const system = { id: 0 };
+    for (const c of db.contracts.filter((x) => x.status === "active")) {
+      const days = M.daysBetween(today, c.end_date);
+      const lead = byId("leads", c.lead_id);
+      if (!lead || days < 0 || days > 60) continue;
+      const people = [lead.owner_id, ...managerIds()];
+      const link = `contracts?contract=${c.id}`;
+      if (!c.reminded_60) {
+        notify(people, system, `${lead.school}'s contract ends on ${shortDate(c.end_date)}. Time to talk about renewing.`, link);
+        const due = M.addDays(c.end_date, -30) > today ? M.addDays(c.end_date, -30) : today;
+        insert("tasks", { title: `Renew ${lead.school} (contract ends ${shortDate(c.end_date)})`, priority: "high", due_date: due, assignee_id: lead.owner_id, lead_id: lead.id });
+        c.reminded_60 = 1;
+        c.reminded_30 = days <= 30 ? 1 : 0;
+      } else if (days <= 30 && !c.reminded_30) {
+        notify(people, system, `${lead.school}'s contract ends in ${days} day${days === 1 ? "" : "s"} and hasn't been renewed yet.`, link);
+        c.reminded_30 = 1;
+      }
+    }
   }
 
   // ─────────────────────────── Monthly report & statement import ───────────────────────────
@@ -481,6 +480,14 @@
       tasksDone: db.tasks.filter((t) => inMonth(t.completed_at)).length,
       decisions: sortBy(db.meetings.filter((mt) => inMonth(mt.date)), (a, b) => cmp(a.date, b.date)).map((mt) => ({ meeting: mt.title, date: mt.date, items: (mt.decisions || "").split("\n").map((d) => d.trim()).filter(Boolean) })).filter((mt) => mt.items.length),
       approvals: { approved: decided("approved").length, approvedAmount: decided("approved").reduce((s, a) => s + (a.amount || 0), 0), rejected: decided("rejected").length },
+      contracts: (() => {
+        const end = next > localToday() ? localToday() : M.addDays(next, -1);
+        return {
+          arr: M.arrOn(db.contracts, end), arrStart: M.arrOn(db.contracts, M.addDays(start, -1)), schools: M.schoolsOn(db.contracts, end),
+          renewed: db.contracts.filter((c) => c.status === "renewed" && c.end_date >= start && c.end_date < next).length,
+          notRenewed: db.contracts.filter((c) => c.status === "ended" && c.end_date >= start && c.end_date < next).length,
+        };
+      })(),
     };
   }
   const IMPORT_ROW = {
@@ -581,6 +588,8 @@
       content: Object.entries(contentGroups).map(([stage, n]) => ({ stage, n })),
       learnersSigned: db.leads.filter((l) => l.stage === "won").reduce((s, l) => s + (l.learners || 0), 0),
       upcomingMeetings: sortBy(db.meetings.filter((m) => m.date >= today), (a, b) => cmp(a.date, b.date)).slice(0, 5),
+      goals: goalRows(user).filter((g) => !g.archived && g.progress.status !== "missed").slice(0, 4),
+      renewals: { summary: M.renewalSummary(db.contracts, today), due: contractRows().filter((c) => ["due", "lapsed"].includes(c.state)).slice(0, 5) },
       activity: sortBy(db.activity.filter((a) => manager || a.audience === "all"), (a, b) => b.id - a.id).slice(0, 12).map((a) => ({ summary: a.summary, created_at: a.created_at, user_name: userName(a.user_id) })),
     };
   }
@@ -687,6 +696,72 @@
         return [200, { ok: true }];
       }
     }
+    if (parts[0] === "goals" && parts[1] && parts[2] === "progress") {
+      const goal = byId("goals", parts[1]);
+      if (!goal || (!atLeast(user, "manager") && M.GOAL_METRICS[goal.metric]?.finance)) throw new HttpError(404, "Not found.");
+      if (method === "GET") return [200, sortBy(db.goal_updates.filter((u) => u.goal_id === goal.id), (a, b) => b.id - a.id).map((u) => ({ ...u, author_name: (byId("users", u.author_id) || {}).name || null }))];
+      if (method === "POST") {
+        if (goal.metric !== "manual") throw new HttpError(422, "This goal updates itself from the workspace's data.");
+        if (!(atLeast(user, "manager") || goal.owner_id === user.id)) throw new HttpError(403, "Only the goal's owner or a manager can update progress.");
+        const data = validate({ value: { type: "money", required: true }, note: { type: "text", max: 1000 } }, body());
+        insert("goal_updates", { goal_id: goal.id, value: data.value, note: data.note ?? null, author_id: user.id });
+        goal.current_value = data.value;
+        logActivity(user.id, `${user.name} updated progress on “${goal.title}”`);
+        return [200, { ok: true }];
+      }
+    }
+    if (parts[0] === "contracts" && parts[1] === "summary" && method === "GET") return [200, M.renewalSummary(db.contracts, localToday())];
+    if (parts[0] === "contracts" && parts[1] && ["renew", "end"].includes(parts[2]) && method === "POST") {
+      if (!atLeast(user, "manager")) throw new HttpError(403, "Only managers can change contracts.");
+      const c = byId("contracts", parts[1]);
+      if (!c) throw new HttpError(404, "Not found.");
+      const school = (byId("leads", c.lead_id) || {}).school;
+      if (c.status !== "active") throw new HttpError(409, "This contract has already been renewed or closed.");
+      if (parts[2] === "end") {
+        const data = validate({ reason: { type: "text", max: 500 } }, body());
+        Object.assign(c, { status: "ended", end_reason: data.reason ?? null });
+        logActivity(user.id, `${user.name} recorded that ${school} is not renewing`);
+        return [200, { ok: true }];
+      }
+      const data = validate({ start_date: { type: "date", required: true }, end_date: { type: "date", required: true }, annual_value: { type: "money", required: true }, learners: { type: "int" }, notes: { type: "text", max: 2000 } }, body());
+      checkContract({ ...data, lead_id: c.lead_id });
+      const next = insert("contracts", { ...data, lead_id: c.lead_id, created_by: user.id });
+      Object.assign(c, { status: "renewed", renewed_to: next.id });
+      logActivity(user.id, `${user.name} renewed the contract with ${school} (R${Number(data.annual_value).toLocaleString("en-ZA")} a year)`);
+      return [200, next];
+    }
+    if (parts[0] === "budgets") {
+      if (!atLeast(user, "manager")) throw new HttpError(403, "Budgets are for managers.");
+      if (method === "GET") return [200, sortBy(db.budgets, (a, b) => cmp(a.category, b.category))];
+      if (method === "PUT") {
+        const input = body();
+        if (!Array.isArray(input.items) || input.items.length > 100) throw new HttpError(422, "Send a list of budget lines.");
+        const items = input.items.map((it) => validate({ category: { type: "text", required: true, max: 60 }, monthly_amount: { type: "money", required: true } }, it || {}));
+        const merged = {};
+        for (const it of items) if (it.monthly_amount > 0) merged[it.category] = it.monthly_amount;
+        db.budgets = Object.entries(merged).map(([category, monthly_amount]) => ({ category, monthly_amount }));
+        logActivity(user.id, `${user.name} updated the monthly budget`, "manager");
+        return [200, { ok: true }];
+      }
+    }
+    if (parts[0] === "finance" && ["budget", "forecast"].includes(parts[1]) && method === "GET") {
+      if (!atLeast(user, "manager")) throw new HttpError(403, "Finance is for managers.");
+      const data = loadData();
+      const monthOk = (v) => (v && /^\d{4}-(0[1-9]|1[0-2])$/.test(v) ? v : null);
+      if (parts[1] === "budget") {
+        const month = url.searchParams.get("month") || localToday().slice(0, 7);
+        if (!monthOk(month)) throw new HttpError(400, "Choose a month.");
+        return [200, M.budgetVsActual(data.budgets, data.transactions, month, localToday())];
+      }
+      const q = (k) => url.searchParams.get(k);
+      return [200, M.forecast(data, localToday(), { months: q("months"), extraSpend: Math.max(0, Number(q("extra_spend")) || 0), extraSpendFrom: monthOk(q("extra_spend_from")), extraIncome: Math.max(0, Number(q("extra_income")) || 0), extraIncomeFrom: monthOk(q("extra_income_from")) })];
+    }
+    if (parts[0] === "stats" && method === "GET") {
+      const data = loadData();
+      const today = localToday();
+      const month = /^\d{4}-(0[1-9]|1[0-2])$/.test(url.searchParams.get("month") || "") ? url.searchParams.get("month") : today.slice(0, 7);
+      return [200, { matrix: M.statsMatrix(data, today, { months: Number(url.searchParams.get("months")) || 12, includeFinance: atLeast(user, "manager") }), team: M.teamMatrix(data, today, month), month }];
+    }
     if (parts[0] === "report" && method === "GET") {
       if (!atLeast(user, "manager")) throw new HttpError(403, "Reports are for managers.");
       const month = url.searchParams.get("month") || localToday().slice(0, 7);
@@ -711,6 +786,7 @@
         ...db.leads.filter((l) => inRange(l.next_follow_up) && !["won", "lost"].includes(l.stage)).map((l) => ({ type: "followup", id: l.id, title: l.school, date: l.next_follow_up, done: false, person_id: l.owner_id })),
         ...db.content.filter((c) => inRange(c.due_date)).map((c) => ({ type: "content", id: c.id, title: c.title, date: c.due_date, done: c.stage === "published", person_id: c.owner_id })),
         ...db.meetings.filter((m) => inRange(m.date)).map((m) => ({ type: "meeting", id: m.id, title: m.title, date: m.date, done: false, person_id: null })),
+        ...db.contracts.filter((c) => inRange(c.end_date)).map((c) => { const lead = byId("leads", c.lead_id) || {}; return { type: "renewal", id: c.id, title: `${lead.school} contract ends`, date: c.end_date, done: c.status !== "active", person_id: lead.owner_id ?? null }; }),
       ]];
     }
     if (parts[0] === "search" && method === "GET") {
@@ -848,6 +924,7 @@
       const row = byId(table, parts[1]);
       if (!row) throw new HttpError(404, "Not found.");
       if (table === "approvals" && !atLeast(user, "manager") && row.requested_by !== user.id) throw new HttpError(404, "Not found.");
+      if (table === "goals" && !atLeast(user, "manager") && M.GOAL_METRICS[row.metric]?.finance) throw new HttpError(404, "Not found.");
       if (method === "GET") return [200, row];
       if (method === "PATCH") {
         if (!resource.canEdit(user, row)) throw new HttpError(403, "You can't change this.");
@@ -983,6 +1060,17 @@
     else if (href.startsWith("/api/backup")) backupNotice();
   }, true);
 
+  window.addEventListener("ws:preview-file", (e) => {
+    const body = document.createElement("div");
+    body.className = "pv-body";
+    body.append(para(`In the workspace on your computer, this saves ${e.detail.name}. Online previews can't save files, so here is what it contains:`));
+    const pre = document.createElement("pre");
+    pre.className = "pv-pre";
+    pre.textContent = e.detail.text.split("\n").slice(0, 40).join("\n") + (e.detail.text.split("\n").length > 40 ? "\n…" : "");
+    body.append(pre);
+    overlay(e.detail.name, body);
+  });
+
   // ─────────────────────────── Preview bar ───────────────────────────
   const ROLE_LABEL = { admin: "Admin", manager: "Manager", member: "Member" };
   let bar;
@@ -1065,6 +1153,7 @@
   }
 
   if (!load()) seed();
+  else checkRenewals();
   persist();
   if (document.body) mountBar();
   else document.addEventListener("DOMContentLoaded", mountBar);

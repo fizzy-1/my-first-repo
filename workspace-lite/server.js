@@ -10,6 +10,9 @@ import { crc32, deflateRawSync } from "node:zlib";
 import { fileURLToPath } from "node:url";
 import { DATA_DIR, all, db, get, getSetting, logActivity, run, setSetting } from "./db.js";
 import { hashPassword, passwordProblem, verifyPassword } from "./passwords.js";
+import "./public/metrics.js"; // shared calculations (also used by the online preview)
+
+const M = globalThis.WSMetrics;
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(ROOT, "public");
@@ -286,7 +289,72 @@ const RESOURCES = {
     canEdit: (user, row) => row.requested_by === user.id && row.status === "pending",
     canDelete: (user, row) => (row.requested_by === user.id && row.status === "pending") || atLeast(user, "admin"),
   },
+  contracts: {
+    label: (r) => `the contract with ${(get("SELECT school FROM leads WHERE id = ?", r.lead_id) || {}).school || "a school"}`,
+    fields: CONTRACT_FIELDS(),
+    list: () => contractRows(),
+    beforeCreate: (data, user) => {
+      checkContract(data);
+      return { ...data, created_by: user.id };
+    },
+    afterCreate: (row) => {
+      // A school with a contract is a customer: mark it won if it isn't already.
+      run("UPDATE leads SET stage = 'won', won_at = COALESCE(won_at, ?) WHERE id = ? AND stage <> 'won'", new Date().toISOString(), row.lead_id);
+    },
+    beforeUpdate: (data, row) => {
+      checkContract({ ...row, ...data });
+      return "end_date" in data && data.end_date !== row.end_date ? { ...data, reminded_60: 0, reminded_30: 0 } : data;
+    },
+    canCreate: (user) => atLeast(user, "manager"),
+    canEdit: (user) => atLeast(user, "manager"),
+    canDelete: (user) => atLeast(user, "manager"),
+  },
+  goals: {
+    label: (r) => `goal “${r.title}”`,
+    fields: {
+      title: { type: "text", required: true, max: 200 },
+      metric: { type: "enum", values: Object.keys(M.GOAL_METRICS) },
+      target: { type: "money", required: true, positive: true },
+      baseline: { type: "money" },
+      unit: { type: "text", max: 40 },
+      start_date: { type: "date", required: true },
+      due_date: { type: "date", required: true },
+      owner_id: { type: "user" },
+      notes: { type: "text", max: 2000 },
+      archived: { type: "bool" },
+    },
+    list: (user) => goalRows(user),
+    beforeCreate: (data, user) => {
+      checkGoalDates(data);
+      return { ...data, baseline: data.baseline ?? 0, owner_id: data.owner_id ?? user.id, created_by: user.id };
+    },
+    beforeUpdate: (data, row) => {
+      checkGoalDates({ ...row, ...data });
+      return data;
+    },
+    canCreate: (user) => atLeast(user, "manager"),
+    canEdit: (user) => atLeast(user, "manager"),
+    canDelete: (user) => atLeast(user, "manager"),
+  },
 };
+
+function CONTRACT_FIELDS() {
+  return {
+    lead_id: { type: "int", required: true },
+    start_date: { type: "date", required: true },
+    end_date: { type: "date", required: true },
+    annual_value: { type: "money", required: true },
+    learners: { type: "int" },
+    notes: { type: "text", max: 2000 },
+  };
+}
+function checkContract(c) {
+  if (!get("SELECT id FROM leads WHERE id = ?", c.lead_id)) throw new HttpError(422, "Choose a school.", { lead_id: "Choose a school." });
+  if (c.end_date <= c.start_date) throw new HttpError(422, "The end date must be after the start date.", { end_date: "Must be after the start date." });
+}
+function checkGoalDates(g) {
+  if (g.due_date <= g.start_date) throw new HttpError(422, "The deadline must be after the start date.", { due_date: "Must be after the start date." });
+}
 
 function insert(table, data) {
   const keys = Object.keys(data);
@@ -306,6 +374,54 @@ function notify(userIds, actor, message, link) {
   for (const id of new Set([].concat(userIds))) {
     if (!id || id === actor.id || !get("SELECT id FROM users WHERE id = ? AND active = 1", id)) continue;
     run("INSERT INTO notifications (user_id, message, link) VALUES (?, ?, ?)", id, message, link ?? null);
+  }
+}
+
+// ─────────────────────────── Goals, contracts and the data the shared calculations need ───────────────────────────
+function loadData() {
+  return {
+    transactions: all("SELECT kind, date, amount, category FROM transactions"),
+    leads: all("SELECT id, school, stage, value, learners, won_at, created_at, owner_id FROM leads"),
+    contracts: all("SELECT * FROM contracts"),
+    content: all("SELECT owner_id, published_at FROM content"),
+    tasks: all("SELECT assignee_id, status, due_date, completed_at FROM tasks"),
+    meetings: all("SELECT date FROM meetings"),
+    users: all("SELECT id, name, job_title, role, active FROM users"),
+    leadNotes: all("SELECT author_id, created_at FROM lead_notes"),
+    budgets: all("SELECT category, monthly_amount FROM budgets"),
+    openingBalance: Number(getSetting("opening_balance", "0")),
+  };
+}
+function contractRows() {
+  const today = localToday();
+  return all("SELECT c.*, l.school, l.city, l.owner_id FROM contracts c JOIN leads l ON l.id = c.lead_id ORDER BY c.end_date").map((c) => ({ ...c, state: M.contractState(c, today), days_left: M.daysBetween(today, c.end_date) }));
+}
+/** Goals with live progress. Money goals (income) are for managers only. */
+function goalRows(user, data = loadData()) {
+  const today = localToday();
+  return all("SELECT * FROM goals ORDER BY archived, due_date")
+    .filter((g) => atLeast(user, "manager") || !M.GOAL_METRICS[g.metric]?.finance)
+    .map((g) => ({ ...g, progress: M.goalProgress(g, data, today) }));
+}
+const shortDate = (iso) => new Date(`${iso}T00:00:00`).toLocaleDateString("en-ZA", { day: "numeric", month: "short", year: "numeric" });
+/** Reminds the school's owner and managers 60 and 30 days before a contract ends, and adds a renewal task. */
+function checkRenewals() {
+  const today = localToday();
+  const system = { id: 0 };
+  for (const c of all("SELECT c.*, l.school, l.owner_id FROM contracts c JOIN leads l ON l.id = c.lead_id WHERE c.status = 'active'")) {
+    const days = M.daysBetween(today, c.end_date);
+    if (days < 0 || days > 60) continue;
+    const people = [c.owner_id, ...managerIds()];
+    const link = `contracts?contract=${c.id}`;
+    if (!c.reminded_60) {
+      notify(people, system, `${c.school}'s contract ends on ${shortDate(c.end_date)}. Time to talk about renewing.`, link);
+      const due = M.addDays(c.end_date, -30) > today ? M.addDays(c.end_date, -30) : today;
+      insert("tasks", { title: `Renew ${c.school} (contract ends ${shortDate(c.end_date)})`, priority: "high", due_date: due, assignee_id: c.owner_id, lead_id: c.lead_id });
+      run("UPDATE contracts SET reminded_60 = 1, reminded_30 = ? WHERE id = ?", days <= 30 ? 1 : 0, c.id);
+    } else if (days <= 30 && !c.reminded_30) {
+      notify(people, system, `${c.school}'s contract ends in ${days} day${days === 1 ? "" : "s"} and hasn't been renewed yet.`, link);
+      run("UPDATE contracts SET reminded_30 = 1 WHERE id = ?", c.id);
+    }
   }
 }
 
@@ -388,6 +504,8 @@ function dashboard(user) {
     content: all("SELECT stage, COUNT(*) AS n FROM content GROUP BY stage"),
     learnersSigned: get("SELECT COALESCE(SUM(learners),0) AS n FROM leads WHERE stage = 'won'").n,
     upcomingMeetings: all("SELECT * FROM meetings WHERE date >= ? ORDER BY date LIMIT 5", today),
+    goals: goalRows(user).filter((g) => !g.archived && !["missed"].includes(g.progress.status)).slice(0, 4),
+    renewals: { summary: M.renewalSummary(all("SELECT * FROM contracts"), today), due: contractRows().filter((c) => ["due", "lapsed"].includes(c.state)).slice(0, 5) },
     activity: all(`SELECT a.summary, a.created_at, u.name AS user_name FROM activity a LEFT JOIN users u ON u.id = a.user_id ${manager ? "" : "WHERE a.audience = 'all'"} ORDER BY a.id DESC LIMIT 12`),
   };
 }
@@ -428,6 +546,15 @@ function monthlyReport(month) {
     tasksDone: get("SELECT COUNT(*) AS n FROM tasks WHERE completed_at >= ? AND completed_at < ?", start, next).n,
     decisions: meetings.map((mt) => ({ meeting: mt.title, date: mt.date, items: (mt.decisions || "").split("\n").map((d) => d.trim()).filter(Boolean) })).filter((mt) => mt.items.length),
     approvals: { approved: approved.n, approvedAmount: approved.t, rejected: get("SELECT COUNT(*) AS n FROM approvals WHERE status = 'rejected' AND decided_at >= ? AND decided_at < ?", start, next).n },
+    contracts: (() => {
+      const contracts = all("SELECT * FROM contracts");
+      const end = next > localToday() ? localToday() : M.addDays(next, -1);
+      return {
+        arr: M.arrOn(contracts, end), arrStart: M.arrOn(contracts, M.addDays(start, -1)), schools: M.schoolsOn(contracts, end),
+        renewed: contracts.filter((c) => c.status === "renewed" && c.end_date >= start && c.end_date < next).length,
+        notRenewed: contracts.filter((c) => c.status === "ended" && c.end_date >= start && c.end_date < next).length,
+      };
+    })(),
   };
 }
 
@@ -680,6 +807,7 @@ async function api(req, res, url) {
       ...all("SELECT id, school AS title, next_follow_up AS date, owner_id FROM leads WHERE next_follow_up BETWEEN ? AND ? AND stage NOT IN ('won','lost')", from, to).map((r) => ({ type: "followup", id: r.id, title: r.title, date: r.date, done: false, person_id: r.owner_id })),
       ...all("SELECT id, title, due_date AS date, stage, owner_id FROM content WHERE due_date BETWEEN ? AND ?", from, to).map((r) => ({ type: "content", id: r.id, title: r.title, date: r.date, done: r.stage === "published", person_id: r.owner_id })),
       ...all("SELECT id, title, date FROM meetings WHERE date BETWEEN ? AND ?", from, to).map((r) => ({ type: "meeting", id: r.id, title: r.title, date: r.date, done: false, person_id: null })),
+      ...all("SELECT c.id, c.end_date, c.status, l.school, l.owner_id FROM contracts c JOIN leads l ON l.id = c.lead_id WHERE c.end_date BETWEEN ? AND ?", from, to).map((r) => ({ type: "renewal", id: r.id, title: `${r.school} contract ends`, date: r.end_date, done: r.status !== "active", person_id: r.owner_id })),
     ]);
   }
 
@@ -846,6 +974,85 @@ async function api(req, res, url) {
     }
   }
 
+  // ── Goals: progress check-ins for goals updated by hand ──
+  if (parts[0] === "goals" && parts[1] && parts[2] === "progress") {
+    const goal = get("SELECT * FROM goals WHERE id = ?", Number(parts[1]));
+    if (!goal || (!atLeast(user, "manager") && M.GOAL_METRICS[goal.metric]?.finance)) throw new HttpError(404, "Not found.");
+    if (method === "GET") return send(res, 200, all("SELECT g.*, u.name AS author_name FROM goal_updates g LEFT JOIN users u ON u.id = g.author_id WHERE goal_id = ? ORDER BY g.id DESC LIMIT 50", goal.id));
+    if (method === "POST") {
+      if (goal.metric !== "manual") throw new HttpError(422, "This goal updates itself from the workspace's data.");
+      if (!(atLeast(user, "manager") || goal.owner_id === user.id)) throw new HttpError(403, "Only the goal's owner or a manager can update progress.");
+      const data = validate({ value: { type: "money", required: true }, note: { type: "text", max: 1000 } }, await readJson(req));
+      insert("goal_updates", { goal_id: goal.id, value: data.value, note: data.note ?? null, author_id: user.id });
+      run("UPDATE goals SET current_value = ? WHERE id = ?", data.value, goal.id);
+      logActivity(user.id, `${user.name} updated progress on “${goal.title}”`);
+      return send(res, 200, { ok: true });
+    }
+  }
+
+  // ── Contracts: renew, or record that a school isn't renewing ──
+  if (parts[0] === "contracts" && parts[1] === "summary" && method === "GET") return send(res, 200, M.renewalSummary(all("SELECT * FROM contracts"), localToday()));
+  if (parts[0] === "contracts" && parts[1] && ["renew", "end"].includes(parts[2]) && method === "POST") {
+    if (!atLeast(user, "manager")) throw new HttpError(403, "Only managers can change contracts.");
+    const c = get("SELECT c.*, l.school FROM contracts c JOIN leads l ON l.id = c.lead_id WHERE c.id = ?", Number(parts[1]));
+    if (!c) throw new HttpError(404, "Not found.");
+    if (c.status !== "active") throw new HttpError(409, "This contract has already been renewed or closed.");
+    if (parts[2] === "end") {
+      const data = validate({ reason: { type: "text", max: 500 } }, await readJson(req));
+      update("contracts", c.id, { status: "ended", end_reason: data.reason ?? null });
+      logActivity(user.id, `${user.name} recorded that ${c.school} is not renewing`);
+      return send(res, 200, { ok: true });
+    }
+    const data = validate({ start_date: { type: "date", required: true }, end_date: { type: "date", required: true }, annual_value: { type: "money", required: true }, learners: { type: "int" }, notes: { type: "text", max: 2000 } }, await readJson(req));
+    checkContract({ ...data, lead_id: c.lead_id });
+    const next = insert("contracts", { ...data, lead_id: c.lead_id, created_by: user.id });
+    update("contracts", c.id, { status: "renewed", renewed_to: next.id });
+    logActivity(user.id, `${user.name} renewed the contract with ${c.school} (R${Number(data.annual_value).toLocaleString("en-ZA")} a year)`);
+    return send(res, 200, next);
+  }
+
+  // ── Budgets, budget vs actual, and the cash forecast (managers) ──
+  if (parts[0] === "budgets") {
+    if (!atLeast(user, "manager")) throw new HttpError(403, "Budgets are for managers.");
+    if (method === "GET") return send(res, 200, all("SELECT * FROM budgets ORDER BY category"));
+    if (method === "PUT") {
+      const body = await readJson(req);
+      if (!Array.isArray(body.items) || body.items.length > 100) throw new HttpError(422, "Send a list of budget lines.");
+      const items = body.items.map((it) => validate({ category: { type: "text", required: true, max: 60 }, monthly_amount: { type: "money", required: true } }, it || {}));
+      db.exec("BEGIN");
+      try {
+        run("DELETE FROM budgets");
+        for (const it of items) if (it.monthly_amount > 0) run("INSERT INTO budgets (category, monthly_amount) VALUES (?, ?) ON CONFLICT(category) DO UPDATE SET monthly_amount = excluded.monthly_amount", it.category, it.monthly_amount);
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+      logActivity(user.id, `${user.name} updated the monthly budget`, "manager");
+      return send(res, 200, { ok: true });
+    }
+  }
+  if (parts[0] === "finance" && ["budget", "forecast"].includes(parts[1]) && method === "GET") {
+    if (!atLeast(user, "manager")) throw new HttpError(403, "Finance is for managers.");
+    const data = loadData();
+    if (parts[1] === "budget") {
+      const month = url.searchParams.get("month") || localToday().slice(0, 7);
+      if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) throw new HttpError(400, "Choose a month.");
+      return send(res, 200, M.budgetVsActual(data.budgets, data.transactions, month, localToday()));
+    }
+    const q = (k) => url.searchParams.get(k);
+    const monthOk = (v) => (v && /^\d{4}-(0[1-9]|1[0-2])$/.test(v) ? v : null);
+    return send(res, 200, M.forecast(data, localToday(), { months: q("months"), extraSpend: Math.max(0, Number(q("extra_spend")) || 0), extraSpendFrom: monthOk(q("extra_spend_from")), extraIncome: Math.max(0, Number(q("extra_income")) || 0), extraIncomeFrom: monthOk(q("extra_income_from")) }));
+  }
+
+  // ── Stats: monthly matrix and team matrix ──
+  if (parts[0] === "stats" && method === "GET") {
+    const data = loadData();
+    const today = localToday();
+    const month = /^\d{4}-(0[1-9]|1[0-2])$/.test(url.searchParams.get("month") || "") ? url.searchParams.get("month") : today.slice(0, 7);
+    return send(res, 200, { matrix: M.statsMatrix(data, today, { months: Number(url.searchParams.get("months")) || 12, includeFinance: atLeast(user, "manager") }), team: M.teamMatrix(data, today, month), month });
+  }
+
   // ── Monthly update report (managers) ──
   if (parts[0] === "report" && method === "GET") {
     if (!atLeast(user, "manager")) throw new HttpError(403, "Reports are for managers.");
@@ -881,6 +1088,7 @@ async function api(req, res, url) {
     const row = get(`SELECT * FROM ${table} WHERE id = ?`, Number(parts[1]));
     if (!row) throw new HttpError(404, "Not found.");
     if (table === "approvals" && !atLeast(user, "manager") && row.requested_by !== user.id) throw new HttpError(404, "Not found.");
+    if (table === "goals" && !atLeast(user, "manager") && M.GOAL_METRICS[row.metric]?.finance) throw new HttpError(404, "Not found.");
     if (method === "GET") return send(res, 200, row);
     if (method === "PATCH") {
       if (!resource.canEdit(user, row)) throw new HttpError(403, "You can't change this.");
@@ -941,7 +1149,9 @@ const server = http.createServer(async (req, res) => {
 setInterval(() => {
   run("DELETE FROM sessions WHERE expires_at < ?", new Date().toISOString());
   run("DELETE FROM notifications WHERE created_at < datetime('now', '-90 days')");
+  checkRenewals();
 }, 3600000).unref();
+checkRenewals();
 
 /** Opens the default browser (used by the double-click start scripts). */
 function openBrowser(target) {

@@ -166,12 +166,32 @@
       ${description && html`<span style=${{ maxWidth: 420, fontSize: 13 }}>${description}</span>`}${action}
     </div>`;
   }
-  function Progress({ value, tone = "primary", label }) {
+  /** Meter. The track is a light step of the fill's own colour; `marker` (0–100) draws a pace tick, e.g. where you should be by today. */
+  function Progress({ value, tone = "primary", label, marker, markerLabel }) {
     const color = tone === "danger" ? "var(--danger)" : tone === "warning" ? "var(--warning)" : tone === "success" ? "var(--success)" : tone === "gold" ? "var(--gold)" : "var(--primary)";
     const v = Math.max(0, Math.min(100, Number(value) || 0));
-    return html`<div role="progressbar" aria-label=${label} aria-valuenow=${Math.round(v)} aria-valuemin="0" aria-valuemax="100" style=${{ height: 8, borderRadius: 99, background: "var(--muted)", overflow: "hidden", flex: 1 }}>
-      <div style=${{ width: `${v}%`, height: "100%", borderRadius: 99, background: color }} />
+    const m = marker === undefined || marker === null ? null : Math.max(0, Math.min(100, marker));
+    return html`<div style=${{ position: "relative", flex: 1, minWidth: 0 }}>
+      <div role="progressbar" aria-label=${label} aria-valuenow=${Math.round(v)} aria-valuemin="0" aria-valuemax="100" style=${{ height: 8, borderRadius: 99, background: `color-mix(in oklab, ${color} 16%, var(--card))`, overflow: "hidden" }}>
+        <div style=${{ width: `${v}%`, height: "100%", borderRadius: 99, background: color }} />
+      </div>
+      ${m !== null && html`<span title=${markerLabel} aria-hidden="true" style=${{ position: "absolute", top: -3, left: `calc(${m}% - 1px)`, width: 2, height: 14, borderRadius: 1, background: "var(--fg)", opacity: 0.55 }} />`}
     </div>`;
+  }
+  /** Small trend line for a table row: muted line, the latest value emphasised. */
+  function Sparkline({ values, width = 88, height = 24, label }) {
+    const nums = values.map((v) => (v === null || v === undefined ? null : Number(v)));
+    const real = nums.filter((v) => v !== null);
+    if (real.length < 2) return html`<span style=${{ display: "inline-block", width, height }} />`;
+    const lo = Math.min(...real), hi = Math.max(...real);
+    const x = (i) => 3 + (i * (width - 6)) / (nums.length - 1);
+    const y = (v) => height - 3 - (hi === lo ? (height - 6) / 2 : ((v - lo) / (hi - lo)) * (height - 6));
+    const d = nums.map((v, i) => (v === null ? "" : `${i && nums[i - 1] !== null ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`)).join(" ");
+    const last = nums.length - 1;
+    return html`<svg width=${width} height=${height} role="img" aria-label=${label} style=${{ display: "block", overflow: "visible" }}>
+      <path d=${d} fill="none" stroke="var(--chart-muted)" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" />
+      ${nums[last] !== null && html`<circle cx=${x(last)} cy=${y(nums[last])} r="3" fill="var(--chart-5)" stroke="var(--card)" stroke-width="1.5" />`}
+    </svg>`;
   }
   const AVATAR_TONES = ["#1f4f8f", "#8a6420", "#0e7c66", "#b4540f", "#8e3a6b", "#4a5a9c"];
   function Avatar({ name = "?", size = 28 }) {
@@ -318,7 +338,7 @@
   function Legend({ series }) {
     if (series.length < 2) return null;
     return html`<ul style=${{ display: "flex", flexWrap: "wrap", gap: "4px 16px", listStyle: "none", margin: "0 0 8px", padding: 0, fontSize: 12, color: "var(--muted-fg)" }}>
-      ${series.map((s) => html`<li key=${s.key} style=${{ display: "inline-flex", alignItems: "center", gap: 6 }}><span aria-hidden="true" style=${{ width: s.type === "line" ? 14 : 10, height: s.type === "line" ? 2 : 10, borderRadius: 3, background: SLOT(s.slot) }} />${s.label}</li>`)}
+      ${series.map((s) => html`<li key=${s.key} style=${{ display: "inline-flex", alignItems: "center", gap: 6 }}><span aria-hidden="true" style=${{ width: s.type === "line" ? 14 : 10, height: s.type === "line" ? 2 : 10, borderRadius: 3, background: s.dashed ? `repeating-linear-gradient(90deg, ${SLOT(s.slot)} 0 4px, transparent 4px 7px)` : SLOT(s.slot) }} />${s.label}</li>`)}
     </ul>`;
   }
   /**
@@ -382,18 +402,20 @@
           </g>`;
         })}
         ${lines.map((s) => {
-          const pts = data.map((d, i) => [x(i), y(Number(d[s.key]) || 0)]);
-          const path = pts.map((p, i) => `${i ? "L" : "M"}${p[0]},${p[1]}`).join(" ");
+          // Missing values (null) leave a gap, so a forecast can start where the actuals end.
+          const pts = data.map((d, i) => (d[s.key] === null || d[s.key] === undefined ? null : [x(i), y(Number(d[s.key]) || 0)]));
+          const path = pts.map((p, i) => (p ? `${i && pts[i - 1] ? "L" : "M"}${p[0]},${p[1]}` : "")).join(" ");
+          const real = pts.filter(Boolean);
           return html`<g key=${s.key} style=${{ pointerEvents: "none" }}>
-            ${s.type === "area" && html`<path d=${`${path} L${pts[pts.length - 1][0]},${y(Math.max(0, min))} L${pts[0][0]},${y(Math.max(0, min))} Z`} fill=${SLOT(s.slot)} opacity="0.14" />`}
-            <path d=${path} fill="none" stroke=${SLOT(s.slot)} stroke-width="2" stroke-linejoin="round" />
+            ${s.type === "area" && real.length > 1 && html`<path d=${`${path} L${real[real.length - 1][0]},${y(Math.max(0, min))} L${real[0][0]},${y(Math.max(0, min))} Z`} fill=${SLOT(s.slot)} opacity="0.14" />`}
+            <path d=${path} fill="none" stroke=${SLOT(s.slot)} stroke-width="2" stroke-linejoin="round" stroke-dasharray=${s.dashed ? "5 4" : undefined} />
             ${hover !== null && pts[hover] && html`<circle cx=${pts[hover][0]} cy=${pts[hover][1]} r="4" fill=${SLOT(s.slot)} stroke="var(--card)" stroke-width="2" />`}
           </g>`;
         })}
       </svg>
       ${hover !== null && data[hover] && html`<div role="tooltip" style=${{ position: "absolute", top: 28, left: Math.min(Math.max(0, x(hover) - 80), w - 190), pointerEvents: "none", background: "var(--card)", border: "1px solid var(--border)", borderRadius: 10, padding: "8px 10px", boxShadow: "0 8px 24px rgb(0 0 0 / .18)", fontSize: 12, minWidth: 160, zIndex: 2 }}>
         <div style=${{ fontWeight: 600, marginBottom: 4 }}>${data[hover].label}</div>
-        ${series.map((s) => html`<div key=${s.key} style=${{ display: "flex", alignItems: "center", gap: 8, justifyContent: "space-between" }}><span style=${{ display: "inline-flex", alignItems: "center", gap: 6, color: "var(--muted-fg)" }}><span style=${{ width: 8, height: 8, borderRadius: 2, background: SLOT(s.slot) }} />${s.label}</span><strong class="tabular">${fmt.value(data[hover][s.key], s.format || format)}</strong></div>`)}
+        ${series.filter((s) => data[hover][s.key] !== null && data[hover][s.key] !== undefined).map((s) => html`<div key=${s.key} style=${{ display: "flex", alignItems: "center", gap: 8, justifyContent: "space-between" }}><span style=${{ display: "inline-flex", alignItems: "center", gap: 6, color: "var(--muted-fg)" }}><span style=${{ width: 8, height: 8, borderRadius: 2, background: SLOT(s.slot) }} />${s.label}</span><strong class="tabular">${fmt.value(data[hover][s.key], s.format || format)}</strong></div>`)}
       </div>`}
     </div>`;
   }
@@ -454,7 +476,7 @@
   window.UI = {
     React, html, Fragment, useState, useEffect, useMemo, useCallback, useRef,
     fmt, toDate, today, addDays, isoDate, cx,
-    Icon, Badge, StatusBadge, Button, Card, Section, PageHeader, Kpi, Grid, Tabs, EmptyState, Progress, Avatar, UserChip, DueDate,
+    Icon, Badge, StatusBadge, Button, Card, Section, PageHeader, Kpi, Grid, Tabs, EmptyState, Progress, Sparkline, Avatar, UserChip, DueDate,
     Field, TextInput, TextArea, Select, SearchInput, Toolbar, Modal, Table, useNarrow,
     Chart, ChartTable, ChartCard, BarList, Legend, Kanban,
   };

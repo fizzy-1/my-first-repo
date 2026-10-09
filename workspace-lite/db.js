@@ -137,6 +137,51 @@ CREATE TABLE IF NOT EXISTS notifications (
   read_at TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE TABLE IF NOT EXISTS contracts (
+  id INTEGER PRIMARY KEY,
+  lead_id INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+  start_date TEXT NOT NULL,
+  end_date TEXT NOT NULL,
+  annual_value REAL NOT NULL DEFAULT 0 CHECK (annual_value >= 0),
+  learners INTEGER CHECK (learners IS NULL OR learners >= 0),
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','renewed','ended')),
+  notes TEXT,
+  end_reason TEXT,
+  renewed_to INTEGER,
+  reminded_60 INTEGER NOT NULL DEFAULT 0,
+  reminded_30 INTEGER NOT NULL DEFAULT 0,
+  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS goals (
+  id INTEGER PRIMARY KEY,
+  title TEXT NOT NULL,
+  metric TEXT NOT NULL DEFAULT 'manual' CHECK (metric IN ('manual','schools_won','learners_signed','content_published','new_leads','income','arr')),
+  target REAL NOT NULL CHECK (target > 0),
+  baseline REAL NOT NULL DEFAULT 0,
+  current_value REAL NOT NULL DEFAULT 0,
+  unit TEXT,
+  start_date TEXT NOT NULL,
+  due_date TEXT NOT NULL,
+  owner_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  notes TEXT,
+  archived INTEGER NOT NULL DEFAULT 0,
+  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS goal_updates (
+  id INTEGER PRIMARY KEY,
+  goal_id INTEGER NOT NULL REFERENCES goals(id) ON DELETE CASCADE,
+  value REAL NOT NULL,
+  note TEXT,
+  author_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS budgets (
+  category TEXT PRIMARY KEY,
+  monthly_amount REAL NOT NULL CHECK (monthly_amount >= 0)
+);
+CREATE INDEX IF NOT EXISTS contracts_end ON contracts(end_date);
 CREATE INDEX IF NOT EXISTS notifications_user ON notifications(user_id, read_at);
 CREATE INDEX IF NOT EXISTS tasks_assignee ON tasks(assignee_id, status);
 CREATE INDEX IF NOT EXISTS leads_stage ON leads(stage);

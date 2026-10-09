@@ -70,7 +70,16 @@
     role: { admin: { label: "Admin", tone: "gold" }, manager: { label: "Manager", tone: "primary" }, member: { label: "Member", tone: "neutral" } },
     kind: { income: { label: "Income", tone: "success" }, expense: { label: "Expense", tone: "neutral" } },
     recurrence: { none: { label: "Does not repeat" }, weekly: { label: "Every week" }, monthly: { label: "Every month" } },
+    goalStatus: {
+      on_track: { label: "On track", tone: "success" }, at_risk: { label: "At risk", tone: "warning" }, behind: { label: "Behind", tone: "danger" },
+      achieved: { label: "Achieved", tone: "primary" }, missed: { label: "Missed", tone: "danger" }, not_started: { label: "Not started", tone: "neutral" },
+    },
+    contractState: {
+      active: { label: "Active", tone: "success" }, due: { label: "Renewal due", tone: "warning" }, lapsed: { label: "Ended, no decision", tone: "danger" },
+      upcoming: { label: "Starts soon", tone: "info" }, not_renewing: { label: "Not renewing", tone: "neutral" }, renewed: { label: "Renewed", tone: "primary" }, ended: { label: "Ended", tone: "neutral" },
+    },
   };
+  const GOAL_METRICS = window.WSMetrics.GOAL_METRICS;
   const nextDueMessage = (r, fallback) => (r && r.next_task_due ? `Done. The next one is due ${fmt.date(r.next_task_due)}.` : fallback);
   const columnsOf = (meta) => Object.entries(meta).map(([id, m]) => ({ id, label: m.label }));
   const RANK = { member: 1, manager: 2, admin: 3 };
@@ -144,7 +153,7 @@
       setFormError("");
       try {
         const out = {};
-        for (const f of fields) out[f.name] = f.type === "checkbox" ? Boolean(values[f.name]) : values[f.name] ?? "";
+        for (const f of fields) if (!f.show || f.show(values)) out[f.name] = f.type === "checkbox" ? Boolean(values[f.name]) : values[f.name] ?? "";
         await onSubmit(out);
       } catch (err) {
         setErrors(err.fields || {});
@@ -157,7 +166,7 @@
     return html`<${Modal} open=${open} onClose=${onClose} title=${title} description=${description} width=${width}
       footer=${html`${extraFooter}<span style=${{ flex: 1 }} /><${Button} onClick=${onClose}>Cancel<//><${Button} variant="primary" disabled=${busy} onClick=${submit}>${busy ? "Saving…" : submitLabel}<//>`}>
       <form class="form-grid" onSubmit=${submit} noValidate>
-        ${fields.map((f) => html`<${FormField} key=${f.name} f=${f} value=${values[f.name]} error=${errors[f.name]} onChange=${(v) => set(f.name, v)} />`)}
+        ${fields.filter((f) => !f.show || f.show(values)).map((f) => html`<${FormField} key=${f.name} f=${typeof f.hint === "function" ? { ...f, hint: f.hint(values) } : f} value=${values[f.name]} error=${errors[f.name]} onChange=${(v) => set(f.name, v)} />`)}
         <button type="submit" hidden />
       </form>
       ${formError && html`<div role="alert" style=${{ padding: "8px 12px", borderRadius: 8, background: "var(--danger-soft)", color: "var(--danger)", fontSize: 13 }}>${formError}</div>`}
@@ -317,6 +326,18 @@
                 ${a.amount !== null && html`<strong><${Money} value=${a.amount} /></strong>`}
               </div>`)}
             <//>
+            <${Section} title="Goals" description="Are we on pace?" actions=${html`<a href="#/goals" style=${{ fontSize: 13, color: "var(--primary)" }}>All goals</a>`}>
+              ${d.goals.length === 0 ? html`<${EmptyState} icon="target" title="No goals set" description=${atLeast(user, "manager") ? "Add one on the Goals page." : null} />` : d.goals.map((g) => html`<a class="list-row" key=${g.id} href="#/goals" style=${{ textDecoration: "none", display: "grid", gap: 6 }}>
+                <span style=${{ display: "flex", justifyContent: "space-between", gap: 8 }}><span style=${{ fontSize: 13.5, fontWeight: 500 }}>${g.title}</span><${StatusBadge} meta=${META.goalStatus} value=${g.progress.status} /></span>
+                <${GoalMeter} g=${g} compact=${true} />
+              </a>`)}
+            <//>
+            <${Section} title="Renewals coming up" description=${`${fmt.zar(d.renewals.summary.arr)} a year under contract`} actions=${html`<a href="#/contracts" style=${{ fontSize: 13, color: "var(--primary)" }}>Contracts</a>`}>
+              ${d.renewals.due.length === 0 ? html`<${EmptyState} icon="refresh-cw" title="No renewals due" description="Nothing ends in the next 90 days." /> ` : d.renewals.due.map((c) => html`<a class="list-row" key=${c.id} href=${`#/contracts?contract=${c.id}`} style=${{ textDecoration: "none" }}>
+                <span style=${{ flex: 1, minWidth: 0 }}><strong style=${{ fontWeight: 500 }}>${c.school}</strong><br /><${Muted}>${fmt.zar(c.annual_value)} a year · ${userName(c.owner_id)}<//></span>
+                <${DaysLeft} c=${c} />
+              </a>`)}
+            <//>
             <${Section} title="Content production" description="Lessons and videos by stage" actions=${html`<a href="#/content" style=${{ fontSize: 13, color: "var(--primary)" }}>Board</a>`}>
               ${d.content.length === 0 ? html`<${EmptyState} icon="video" title="No content planned yet" />` : html`<${BarList} items=${Object.keys(META.contentStage).map((k) => ({ label: META.contentStage[k].label, value: d.content.find((c) => c.stage === k)?.n || 0 }))} />`}
             <//>
@@ -420,10 +441,12 @@
   function LeadDetail({ lead, onClose, onChanged }) {
     const { user, userName, toast } = useApp();
     const notes = useResource(lead ? `/api/leads/${lead.id}/notes` : null);
+    const contracts = useResource(lead ? "/api/contracts" : null);
     const act = useAction();
     const [note, setNote] = useState("");
     const [editing, setEditing] = useState(false);
     const [taskOpen, setTaskOpen] = useState(false);
+    const [contractOpen, setContractOpen] = useState(false);
     const [confirm, confirmDialog] = useConfirm();
     useEffect(() => setNote(""), [lead && lead.id]);
     if (!lead) return null;
@@ -437,7 +460,7 @@
     };
     const row = (icon, label, value) => html`<div style=${{ display: "flex", gap: 10, alignItems: "center", fontSize: 13.5 }}><span style=${{ color: "var(--muted-fg)", display: "inline-flex" }}><${Icon} name=${icon} size=${15} /></span><span style=${{ color: "var(--muted-fg)", width: 110 }}>${label}</span><span style=${{ minWidth: 0, overflowWrap: "anywhere" }}>${value || "—"}</span></div>`;
     return html`<${Fragment}>
-      <${Modal} open=${!editing && !taskOpen} onClose=${onClose} title=${lead.school} description=${[lead.city, META.leadStage[lead.stage].label].filter(Boolean).join(" · ")} width=${640}
+      <${Modal} open=${!editing && !taskOpen && !contractOpen} onClose=${onClose} title=${lead.school} description=${[lead.city, META.leadStage[lead.stage].label].filter(Boolean).join(" · ")} width=${640}
         footer=${html`${atLeast(user, "manager") && html`<${Button} variant="ghost" icon="trash-2" style=${{ color: "var(--danger)" }} onClick=${() => confirm(`Delete ${lead.school} and its notes?`, async () => { await act(() => api("DELETE", `/api/leads/${lead.id}`), "School removed"); onChanged(true); })}>Delete<//>`}
           <span style=${{ flex: 1 }} /><${Button} icon="list-checks" onClick=${() => setTaskOpen(true)}>Add follow-up task<//><${Button} variant="primary" icon="pencil" onClick=${() => setEditing(true)}>Edit<//>`}>
         <div style=${{ display: "grid", gap: 8 }}>
@@ -448,6 +471,14 @@
           ${row("graduation-cap", "Learners", lead.learners !== null ? fmt.number(lead.learners) : null)}
           ${row("clock", "Follow up", lead.next_follow_up && html`<${DueDate} date=${lead.next_follow_up} />`)}
           ${row("briefcase", "Owner", userName(lead.owner_id))}
+          ${(() => {
+            const mine = (contracts.data || []).filter((c) => c.lead_id === lead.id).sort((a, b) => b.start_date.localeCompare(a.start_date));
+            const current = mine.find((c) => ["active", "due", "lapsed", "upcoming", "not_renewing"].includes(c.state));
+            const value = current
+              ? html`<a href=${`#/contracts?contract=${current.id}`} style=${{ display: "inline-flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}>${fmt.zar(current.annual_value)} a year until ${fmt.date(current.end_date)} <${StatusBadge} meta=${META.contractState} value=${current.state} /></a>`
+              : atLeast(user, "manager") ? html`<${Button} size="sm" variant="soft" icon="plus" onClick=${() => setContractOpen(true)}>Add contract<//>` : mine.length ? "No current contract" : null;
+            return row("file-text", "Contract", value);
+          })()}
         </div>
         <div style=${{ borderTop: "1px solid var(--border)", paddingTop: 14, display: "grid", gap: 10 }}>
           <strong style=${{ fontSize: 14 }}>Notes</strong>
@@ -465,6 +496,15 @@
           await api("PATCH", `/api/leads/${lead.id}`, v);
           setEditing(false);
           toast("School updated");
+          onChanged(false);
+        }} />
+      <${FormModal} open=${contractOpen} onClose=${() => setContractOpen(false)} title=${`Add a contract with ${lead.school}`} fields=${contractFields([lead])}
+        initial=${{ lead_id: lead.id, start_date: today(), end_date: plusYear(today()), annual_value: lead.value || "", learners: lead.learners ?? "" }} submitLabel="Add contract"
+        onSubmit=${async (v) => {
+          await api("POST", "/api/contracts", v);
+          setContractOpen(false);
+          toast(lead.stage === "won" ? "Contract added" : `Contract added and ${lead.school} marked as won`);
+          contracts.reload();
           onChanged(false);
         }} />
       <${TaskModal} open=${taskOpen} task=${null} defaults=${{ lead_id: lead.id, title: `Follow up with ${lead.school}`, assignee_id: lead.owner_id || user.id, due_date: lead.next_follow_up || addDays(today(), 2) }}
@@ -562,12 +602,266 @@
     <//>`;
   }
 
+  // ─────────────────────────── Goals ───────────────────────────
+  const plusYear = (iso) => {
+    const d = toDate(iso);
+    d.setFullYear(d.getFullYear() + 1);
+    return addDays(UI.isoDate(d), -1);
+  };
+  function goalValue(g, v) {
+    if (g.progress.unit === "zar") return fmt.zar(v, { compact: Math.abs(v) >= 1e6 });
+    return `${fmt.number(v, { decimals: Number.isInteger(v) ? 0 : 1 })}${g.metric === "manual" && g.unit ? ` ${g.unit}` : ""}`;
+  }
+  const GOAL_TONE = { on_track: "success", at_risk: "warning", behind: "danger", missed: "danger", achieved: "primary", not_started: "primary" };
+  function goalPace(g) {
+    const p = g.progress;
+    if (p.status === "achieved") return "Target reached.";
+    if (p.status === "missed") return `Deadline passed at ${goalValue(g, p.current)}.`;
+    if (p.status === "not_started") return `Starts ${fmt.date(g.start_date)}.`;
+    const expected = p.unit === "zar" || p.target >= 50 ? Math.round(p.expected) : Math.round(p.expected * 10) / 10;
+    return `Expected about ${goalValue(g, expected)} by today. ${p.daysLeft} day${p.daysLeft === 1 ? "" : "s"} left.`;
+  }
+  function GoalMeter({ g, compact }) {
+    const p = g.progress;
+    const span = p.target - p.baseline;
+    const marker = ["achieved", "missed", "not_started"].includes(p.status) || !span ? null : ((p.expected - p.baseline) / span) * 100;
+    return html`<div style=${{ display: "grid", gap: 6 }}>
+      <div style=${{ display: "flex", alignItems: "baseline", flexWrap: "wrap", gap: "2px 8px" }}>
+        <strong class="tabular" style=${{ fontSize: compact ? 15 : 20, fontWeight: 600 }}>${goalValue(g, p.current)}</strong>
+        <${Muted}>of ${goalValue(g, p.target)}<//>
+      </div>
+      <${UI.Progress} value=${p.pct} tone=${GOAL_TONE[p.status]} label=${`${g.title}: ${Math.round(p.pct)}%`} marker=${marker} markerLabel="Where you should be by today" />
+    </div>`;
+  }
+  const goalFields = (editing) => [
+    { name: "title", label: "Goal", type: "text", required: true, full: true, placeholder: "e.g. Sign 12 new schools this year" },
+    { name: "metric", label: "How progress is measured", type: "select", options: Object.fromEntries(Object.entries(GOAL_METRICS).map(([k, m]) => [k, { label: m.label }])), default: "schools_won", full: true,
+      hint: (v) => (v.metric === "manual" ? "You update the number yourself as you go." : v.metric === "arr" ? "Uses the contracts running on each day." : "Counted automatically from the workspace between the start date and the deadline.") },
+    { name: "target", label: "Target", type: "money", required: true },
+    { name: "baseline", label: "Starting value", type: "money", show: (v) => v.metric === "manual" || v.metric === "arr", hint: "Where you are now, so progress counts from here." },
+    { name: "unit", label: "Unit", type: "text", show: (v) => v.metric === "manual", placeholder: "e.g. subscribers" },
+    { name: "start_date", label: "Start", type: "date", required: true, default: today() },
+    { name: "due_date", label: "Deadline", type: "date", required: true },
+    { name: "owner_id", label: "Owner", type: "user" },
+    { name: "notes", label: "Notes", type: "textarea", full: true, rows: 2 },
+    ...(editing ? [{ name: "archived", label: "Archived", type: "checkbox", hint: "hidden from the current goals" }] : []),
+  ];
+  function GoalsView() {
+    const { user, userName, toast } = useApp();
+    const manager = atLeast(user, "manager");
+    const res = useResource("/api/goals");
+    const act = useAction();
+    const [tab, setTab] = useState("current");
+    const [editing, setEditing] = useState(null);
+    const [updating, setUpdating] = useState(null);
+    const [history, setHistory] = useState(null);
+    const historyRes = useResource(history ? `/api/goals/${history.id}/progress` : null);
+    const [confirm, confirmDialog] = useConfirm();
+    const item = editing && editing !== "new" ? editing : null;
+    const now = today();
+    return html`<${Fragment}>
+      <${PageHeader} title="Goals" description="What the team is aiming for, and whether you're on pace to get there." actions=${manager && html`<${Button} variant="primary" icon="plus" onClick=${() => setEditing("new")}>New goal<//>`} />
+      <${Loaded} res=${res}>${(goals) => {
+        const current = goals.filter((g) => !g.archived && g.due_date >= now);
+        const past = goals.filter((g) => !g.archived && g.due_date < now);
+        const archived = goals.filter((g) => g.archived);
+        const shown = tab === "current" ? current : tab === "past" ? past : archived;
+        const counts = (st) => current.filter((g) => g.progress.status === st).length;
+        return html`
+          ${current.length > 0 && html`<div style=${{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
+            ${["on_track", "at_risk", "behind", "achieved"].filter((st) => counts(st)).map((st) => html`<${Badge} key=${st} tone=${META.goalStatus[st].tone} dot>${counts(st)} ${META.goalStatus[st].label.toLowerCase()}<//>`)}
+          </div>`}
+          <${Tabs} value=${tab} onChange=${setTab} items=${[{ id: "current", label: "Current", count: current.length }, { id: "past", label: "Past", count: past.length }, { id: "archived", label: "Archived", count: archived.length }]} />
+          ${shown.length === 0 ? html`<${Card}><${EmptyState} icon="target" title=${tab === "current" ? "No goals yet" : "Nothing here"} description=${tab === "current" && manager ? "Set a goal such as “Sign 12 schools this year”. Most goals track themselves from the workspace." : null} /><//>`
+          : html`<${Grid} min=${340}>${shown.map((g) => html`<${Card} key=${g.id} style=${{ padding: 18, display: "grid", gap: 12, alignContent: "start" }}>
+            <div style=${{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 }}>
+              <strong style=${{ fontSize: 15, fontWeight: 600, textWrap: "balance" }}>${g.title}</strong>
+              <${StatusBadge} meta=${META.goalStatus} value=${g.progress.status} />
+            </div>
+            <${GoalMeter} g=${g} />
+            <${Muted}>${goalPace(g)}<//>
+            <div style=${{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "6px 12px", fontSize: 12.5, color: "var(--muted-fg)" }}>
+              <${UserChip} name=${g.owner_id ? userName(g.owner_id) : null} />
+              <span style=${{ display: "inline-flex", alignItems: "center", gap: 4 }}><${Icon} name=${g.metric === "manual" ? "pencil" : "refresh-cw"} size=${12} />${GOAL_METRICS[g.metric].label}</span>
+              <span>Due ${fmt.date(g.due_date)}</span>
+            </div>
+            ${g.notes && html`<${Muted}>${g.notes}<//>`}
+            <div style=${{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              ${g.metric === "manual" && (manager || g.owner_id === user.id) && html`<${Button} size="sm" variant="soft" icon="trending-up" onClick=${() => setUpdating(g)}>Update progress<//>`}
+              ${g.metric === "manual" && html`<${Button} size="sm" variant="ghost" icon="clock" onClick=${() => setHistory(g)}>History<//>`}
+              ${manager && html`<${Button} size="sm" variant="ghost" icon="pencil" onClick=${() => setEditing(g)}>Edit<//>`}
+            </div>
+          <//>`)}<//>`}`;
+      }}<//>
+      <${FormModal} open=${Boolean(editing)} onClose=${() => setEditing(null)} title=${item ? "Edit goal" : "New goal"} fields=${goalFields(Boolean(item))} initial=${item ? { ...item, archived: Boolean(item.archived) } : { owner_id: user.id }} submitLabel=${item ? "Save" : "Add goal"}
+        extraFooter=${item && html`<${Button} variant="ghost" icon="trash-2" style=${{ color: "var(--danger)" }} onClick=${() => confirm(`Delete “${item.title}” and its history?`, async () => { await act(() => api("DELETE", `/api/goals/${item.id}`), "Goal deleted"); setEditing(null); res.reload(); })}>Delete<//>`}
+        onSubmit=${async (v) => {
+          if (item) await api("PATCH", `/api/goals/${item.id}`, v);
+          else await api("POST", "/api/goals", v);
+          setEditing(null);
+          toast(item ? "Goal saved" : "Goal added");
+          res.reload();
+        }} />
+      <${FormModal} open=${Boolean(updating)} onClose=${() => setUpdating(null)} title=${updating ? `Update “${updating.title}”` : ""} description=${updating ? `Currently ${goalValue(updating, updating.progress.current)} of ${goalValue(updating, updating.progress.target)}.` : ""}
+        fields=${[{ name: "value", label: updating && updating.unit ? `New total (${updating.unit})` : "New total", type: "money", required: true }, { name: "note", label: "What changed?", type: "textarea", full: true, rows: 2 }]}
+        initial=${updating ? { value: updating.current_value } : null} submitLabel="Save progress"
+        onSubmit=${async (v) => {
+          await api("POST", `/api/goals/${updating.id}/progress`, v);
+          setUpdating(null);
+          toast("Progress saved");
+          res.reload();
+        }} />
+      <${Modal} open=${Boolean(history)} onClose=${() => setHistory(null)} title=${history ? history.title : ""} description="Progress updates, newest first" width=${480}>
+        ${historyRes.data && historyRes.data.length === 0 && html`<${Muted}>No updates yet.<//>`}
+        ${(historyRes.data || []).map((u) => html`<div class="list-row" key=${u.id} style=${{ alignItems: "flex-start" }}>
+          <strong class="tabular" style=${{ minWidth: 80 }}>${history ? goalValue(history, u.value) : u.value}</strong>
+          <span style=${{ flex: 1, minWidth: 0, fontSize: 13 }}>${u.note || html`<${Muted}>No note<//>`}<br /><${Muted}>${u.author_name || "Someone"} · ${fmt.date(u.created_at)}<//></span>
+        </div>`)}
+      <//>
+      ${confirmDialog}
+    <//>`;
+  }
+
+  // ─────────────────────────── Contracts & renewals ───────────────────────────
+  const contractFields = (leads) => [
+    { name: "lead_id", label: "School", type: "select", required: true, full: true, placeholder: "Choose a school",
+      options: [...leads].sort((a, b) => (b.stage === "won") - (a.stage === "won") || a.school.localeCompare(b.school)).map((l) => ({ value: l.id, label: `${l.school}${l.stage === "won" ? "" : ` (${META.leadStage[l.stage].label})`}` })) },
+    { name: "start_date", label: "Starts", type: "date", required: true },
+    { name: "end_date", label: "Ends", type: "date", required: true, hint: "Usually a year after the start." },
+    { name: "annual_value", label: "Value per year (R)", type: "money", required: true },
+    { name: "learners", label: "Learners covered", type: "number" },
+    { name: "notes", label: "Notes", type: "textarea", full: true, rows: 2 },
+  ];
+  const renewFields = [
+    { name: "start_date", label: "New term starts", type: "date", required: true },
+    { name: "end_date", label: "New term ends", type: "date", required: true },
+    { name: "annual_value", label: "Value per year (R)", type: "money", required: true },
+    { name: "learners", label: "Learners covered", type: "number" },
+    { name: "notes", label: "Notes", type: "textarea", full: true, rows: 2 },
+  ];
+  function DaysLeft({ c }) {
+    if (["renewed", "ended", "not_renewing"].includes(c.state)) return html`<${Muted}>${c.state === "not_renewing" ? `Ends ${fmt.date(c.end_date)}` : `Ended ${fmt.date(c.end_date)}`}<//>`;
+    if (c.state === "upcoming") return html`<${Muted}>Starts ${fmt.date(c.start_date)}<//>`;
+    const d = c.days_left;
+    const tone = d < 0 ? "var(--danger)" : d <= 30 ? "var(--danger)" : d <= 60 ? "var(--warning)" : "var(--muted-fg)";
+    return html`<span class="tabular" style=${{ display: "inline-flex", alignItems: "center", gap: 4, color: tone, whiteSpace: "nowrap", fontSize: 13 }}>${d <= 60 && html`<${Icon} name=${d <= 30 ? "triangle-alert" : "clock"} size=${13} />`}${d < 0 ? `Ended ${-d} day${d === -1 ? "" : "s"} ago` : `${d} day${d === 1 ? "" : "s"} left`}</span>`;
+  }
+  /** Renew / not renewing / edit dialogs for one contract, shared by the contracts page and the dashboard. */
+  function useContractActions(onChanged) {
+    const { toast } = useApp();
+    const [renewing, setRenewing] = useState(null);
+    const [ending, setEnding] = useState(null);
+    const dialogs = html`
+      <${FormModal} open=${Boolean(renewing)} onClose=${() => setRenewing(null)} title=${renewing ? `Renew ${renewing.school}` : ""} description="Starts a new term. The current contract is marked as renewed." fields=${renewFields}
+        initial=${renewing ? { start_date: addDays(renewing.end_date, 1), end_date: plusYear(addDays(renewing.end_date, 1)), annual_value: renewing.annual_value, learners: renewing.learners } : null} submitLabel="Renew contract"
+        onSubmit=${async (v) => {
+          await api("POST", `/api/contracts/${renewing.id}/renew`, v);
+          toast(`${renewing.school} renewed`);
+          setRenewing(null);
+          onChanged();
+        }} />
+      <${FormModal} open=${Boolean(ending)} onClose=${() => setEnding(null)} title=${ending ? `${ending.school} isn't renewing` : ""} description=${ending ? `The contract still runs until ${fmt.date(ending.end_date)}.` : ""}
+        fields=${[{ name: "reason", label: "Why not?", type: "textarea", full: true, rows: 3, hint: "Helps when you try again next year." }]} submitLabel="Save"
+        onSubmit=${async (v) => {
+          await api("POST", `/api/contracts/${ending.id}/end`, v);
+          toast("Saved");
+          setEnding(null);
+          onChanged();
+        }} />`;
+    return { renew: setRenewing, end: setEnding, dialogs };
+  }
+  function ContractsView({ params }) {
+    const { user, userName, toast } = useApp();
+    const manager = atLeast(user, "manager");
+    const res = useResource("/api/contracts");
+    const summary = useResource("/api/contracts/summary");
+    const leads = useResource("/api/leads");
+    const act = useAction();
+    const [filter, setFilter] = useState("");
+    const [editing, setEditing] = useState(null);
+    const [confirm, confirmDialog] = useConfirm();
+    const reload = () => {
+      res.reload();
+      summary.reload();
+    };
+    const actions = useContractActions(reload);
+    const openId = params.contract ? Number(params.contract) : null;
+    const open = (res.data || []).find((c) => c.id === openId) || null;
+    const item = editing && editing !== "new" ? editing : null;
+    return html`<${Fragment}>
+      <${PageHeader} title="Contracts & renewals" description="Every school under contract, what they're worth, and which renewals need attention." actions=${manager && html`<${Button} variant="primary" icon="plus" onClick=${() => setEditing("new")}>Add contract<//>`} />
+      <${Loaded} res=${summary}>${(s) => html`<${Grid} min=${200} style=${{ marginBottom: 16 }}>
+        <${Kpi} label="Annual recurring revenue" icon="banknote" value=${fmt.zar(s.arr)} sub=${`${fmt.zar(s.arr / 12)} a month`} />
+        <${Kpi} label="Schools under contract" icon="school" value=${fmt.number(s.schools)} sub=${`${fmt.number(s.learners)} learners covered`} />
+        <${Kpi} label="Renewals to decide" icon="clock" value=${fmt.number(s.dueCount)} sub=${s.dueCount ? `${fmt.zar(s.dueValue)} a year at stake` : "Nothing due in the next 90 days"} />
+        <${Kpi} label="Renewal rate" icon="refresh-cw" value=${s.renewalRate === null ? "—" : fmt.percent(s.renewalRate * 100)} sub=${s.renewed + s.notRenewed ? `${s.renewed} renewed, ${s.notRenewed} didn't, last 12 months` : "No renewals decided yet"} />
+      <//>`}<//>
+      <${Loaded} res=${res}>${(rows) => {
+        const due = rows.filter((c) => ["due", "lapsed"].includes(c.state)).sort((a, b) => a.days_left - b.days_left);
+        const shown = filter ? rows.filter((c) => c.state === filter) : rows;
+        return html`<div style=${{ display: "grid", gap: 16 }}>
+          ${due.length > 0 && html`<${Section} title="Needs a decision" description="Contracts ending within 90 days. Reminders go out at 60 and 30 days.">
+            ${due.map((c) => html`<div class="list-row" key=${c.id} style=${{ flexWrap: "wrap" }}>
+              <button onClick=${() => go(`contracts?contract=${c.id}`)} style=${{ all: "unset", cursor: "pointer", flex: "1 1 220px", minWidth: 0 }}><strong style=${{ fontWeight: 500 }}>${c.school}</strong><br /><${Muted}>${fmt.zar(c.annual_value)} a year · ends ${fmt.date(c.end_date)} · ${userName(c.owner_id)}<//></button>
+              <${DaysLeft} c=${c} />
+              ${manager && html`<span style=${{ display: "flex", gap: 6 }}><${Button} size="sm" variant="primary" icon="refresh-cw" onClick=${() => actions.renew(c)}>Renew<//><${Button} size="sm" onClick=${() => actions.end(c)}>Not renewing<//></span>`}
+            </div>`)}
+          <//>`}
+          <${Card}><${Table} rows=${shown} search=${(c, q) => c.school.toLowerCase().includes(q)} searchPlaceholder="Search schools…" onRowClick=${(c) => go(`contracts?contract=${c.id}`)}
+            toolbar=${html`<${Select} ariaLabel="Status" value=${filter} onChange=${setFilter} placeholder="All contracts" options=${META.contractState} />`}
+            empty=${html`<${EmptyState} icon="file-text" title="No contracts yet" description="Add a contract when a school signs, so renewals and recurring revenue track themselves." />`}
+            columns=${[
+              { key: "school", header: "School", sort: (c) => c.school.toLowerCase(), render: (c) => html`<strong style=${{ fontWeight: 500 }}>${c.school}</strong><br /><${Muted}>${c.city || ""}<//>` },
+              { key: "term", header: "Term", hideOnMobile: true, sort: (c) => c.end_date, render: (c) => html`<span style=${{ whiteSpace: "nowrap" }}>${fmt.shortDate(c.start_date)} – ${fmt.date(c.end_date)}</span>` },
+              { key: "value", header: "Per year", align: "right", sort: (c) => c.annual_value, render: (c) => html`<${Money} value=${c.annual_value} />` },
+              { key: "learners", header: "Learners", align: "right", hideOnMobile: true, sort: (c) => c.learners || 0, render: (c) => (c.learners ? fmt.number(c.learners) : "—") },
+              { key: "state", header: "Status", render: (c) => html`<${StatusBadge} meta=${META.contractState} value=${c.state} />` },
+              { key: "left", header: "Time left", hideOnMobile: true, sort: (c) => c.days_left, render: (c) => html`<${DaysLeft} c=${c} />` },
+            ]} /><//>
+        </div>`;
+      }}<//>
+      ${open && html`<${Modal} open=${true} onClose=${() => go("contracts")} title=${open.school} description=${`${fmt.date(open.start_date)} – ${fmt.date(open.end_date)}`} width=${560}
+        footer=${html`${manager && html`<${Button} variant="ghost" icon="trash-2" style=${{ color: "var(--danger)" }} onClick=${() => confirm(`Delete this contract with ${open.school}? Use “Not renewing” instead if the school is leaving.`, async () => { await act(() => api("DELETE", `/api/contracts/${open.id}`), "Contract deleted"); go("contracts"); reload(); })}>Delete<//>`}
+          <span style=${{ flex: 1 }} />
+          ${manager && open.status === "active" && html`<${Button} onClick=${() => actions.end(open)}>Not renewing<//><${Button} icon="refresh-cw" onClick=${() => actions.renew(open)}>Renew<//>`}
+          ${manager && html`<${Button} variant="primary" icon="pencil" onClick=${() => setEditing(open)}>Edit<//>`}`}>
+        <div style=${{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10 }}><${StatusBadge} meta=${META.contractState} value=${open.state} /><${DaysLeft} c=${open} /></div>
+        <div class="form-grid">
+          <div><${Muted}>Value per year<//><div class="tabular" style=${{ fontSize: 18, fontWeight: 600 }}>${fmt.zar(open.annual_value)}</div></div>
+          <div><${Muted}>Learners<//><div class="tabular" style=${{ fontSize: 18, fontWeight: 600 }}>${open.learners ? fmt.number(open.learners) : "—"}</div></div>
+          <div><${Muted}>School owner<//><div>${userName(open.owner_id)}</div></div>
+        </div>
+        ${open.notes && html`<p class="pre" style=${{ margin: 0, fontSize: 13.5 }}>${open.notes}</p>`}
+        ${open.end_reason && html`<div style=${{ fontSize: 13, padding: "8px 12px", borderRadius: 8, background: "var(--subtle)", border: "1px solid var(--border)" }}>Not renewing: ${open.end_reason}</div>`}
+        <div>
+          <strong style=${{ fontSize: 13 }}>All terms with this school</strong>
+          ${(res.data || []).filter((c) => c.lead_id === open.lead_id).sort((a, b) => b.start_date.localeCompare(a.start_date)).map((c) => html`<div class="list-row" key=${c.id} style=${{ fontSize: 13 }}>
+            <span style=${{ flex: 1 }}>${fmt.date(c.start_date)} – ${fmt.date(c.end_date)}</span><span class="tabular">${fmt.zar(c.annual_value)}</span><${StatusBadge} meta=${META.contractState} value=${c.state} />
+          </div>`)}
+        </div>
+        <a href=${`#/pipeline?lead=${open.lead_id}`} style=${{ fontSize: 13, color: "var(--primary)" }}>Open the school's notes and follow-ups</a>
+      <//>`}
+      <${FormModal} open=${Boolean(editing)} onClose=${() => setEditing(null)} title=${item ? `Edit contract with ${item.school}` : "Add a contract"} fields=${contractFields(leads.data || [])}
+        initial=${item || { start_date: today(), end_date: plusYear(today()) }} submitLabel=${item ? "Save" : "Add contract"}
+        onSubmit=${async (v) => {
+          if (item) await api("PATCH", `/api/contracts/${item.id}`, v);
+          else await api("POST", "/api/contracts", v);
+          setEditing(null);
+          toast(item ? "Contract saved" : "Contract added");
+          reload();
+        }} />
+      ${actions.dialogs}
+      ${confirmDialog}
+    <//>`;
+  }
+
   // ─────────────────────────── Calendar ───────────────────────────
   const EVENT_TYPES = {
     meeting: { label: "Meeting", icon: "notebook-pen", slot: 5, href: (e) => `meetings?meeting=${e.id}` },
     task: { label: "Task due", icon: "list-checks", slot: 1, href: (e) => `tasks?task=${e.id}` },
     followup: { label: "School follow-up", icon: "school", slot: 4, href: (e) => `pipeline?lead=${e.id}` },
     content: { label: "Content due", icon: "video", slot: 3, href: (e) => `content?item=${e.id}` },
+    renewal: { label: "Contract ends", icon: "file-text", slot: 6, href: (e) => `contracts?contract=${e.id}` },
   };
   const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
   function EventChip({ e }) {
@@ -875,21 +1169,195 @@
   // ─────────────────────────── Finance ───────────────────────────
   function downloadCsv(name, rows) {
     const esc = (v) => {
-      const s = v === null || v === undefined ? "" : String(v);
-      return /[",\n]/.test(s) || /^[=+\-@]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+      // Text that a spreadsheet would run as a formula gets a leading apostrophe; numbers stay numbers.
+      let s = v === null || v === undefined ? "" : String(v);
+      if (typeof v === "string" && /^[=+\-@\t\r]/.test(s)) s = `'${s}`;
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
     };
-    const blob = new Blob([rows.map((r) => r.map(esc).join(",")).join("\r\n")], { type: "text/csv" });
+    const text = rows.map((r) => r.map(esc).join(",")).join("\r\n");
+    if (window.WS_PREVIEW) return window.dispatchEvent(new CustomEvent("ws:preview-file", { detail: { name, text } }));
+    const blob = new Blob([text], { type: "text/csv" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     a.download = name;
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   }
-  function FinanceView() {
+  const monthOptions = (fromOffset, count, dir = -1) => Array.from({ length: count }, (_, i) => {
+    const d = new Date();
+    d.setDate(1);
+    d.setMonth(d.getMonth() + fromOffset + dir * i);
+    return { value: UI.isoDate(d).slice(0, 7), label: d.toLocaleDateString("en-ZA", { month: "long", year: "numeric" }) };
+  });
+  function useDebounced(value, ms = 400) {
+    const [v, setV] = useState(value);
+    useEffect(() => {
+      const t = setTimeout(() => setV(value), ms);
+      return () => clearTimeout(t);
+    }, [value, ms]);
+    return v;
+  }
+  /** One budget line: spend against budget, with a tick for how far through the month we are. */
+  function BudgetLine({ r, elapsed, current }) {
+    const pct = r.budget ? (r.actual / r.budget) * 100 : 100;
+    const over = r.actual > r.budget;
+    const nearly = !over && pct >= 90 && r.actual < r.budget;
+    const tone = over ? "danger" : nearly ? "warning" : "primary";
+    return html`<div style=${{ display: "grid", gap: 6, padding: "10px 0", borderTop: "1px solid var(--border)" }}>
+      <div style=${{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", gap: "2px 12px", fontSize: 13.5 }}>
+        <span style=${{ fontWeight: 500 }}>${r.category}</span>
+        <span class="tabular"><strong style=${{ fontWeight: 600 }}>${fmt.zar(r.actual)}</strong> <${Muted}>of ${fmt.zar(r.budget)}<//></span>
+      </div>
+      <${UI.Progress} value=${pct} tone=${tone} label=${`${r.category}: ${Math.round(pct)}% of budget`} marker=${current ? elapsed * 100 : null} markerLabel="How far through the month we are" />
+      ${(over || nearly) && html`<span style=${{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12, color: over ? "var(--danger)" : "var(--warning)" }}><${Icon} name="triangle-alert" size=${12} />${over ? `Over budget by ${fmt.zar(r.actual - r.budget)}` : `Almost used up: ${fmt.zar(r.budget - r.actual)} left`}</span>`}
+    </div>`;
+  }
+  function BudgetEditor({ open, onClose, onSaved, transactions }) {
+    const [lines, setLines] = useState([]);
+    const [error, setError] = useState("");
+    const [busy, setBusy] = useState(false);
+    const averages = useMemo(() => {
+      const keys = monthOptions(-1, 3).map((m) => m.value);
+      const totals = {};
+      for (const t of transactions || []) if (t.kind === "expense" && keys.includes(t.date.slice(0, 7))) totals[t.category] = (totals[t.category] || 0) + t.amount;
+      return Object.fromEntries(Object.entries(totals).map(([c, v]) => [c, Math.round(v / 3 / 100) * 100]));
+    }, [transactions]);
+    useEffect(() => {
+      if (!open) return;
+      setError("");
+      api("GET", "/api/budgets").then((rows) => setLines(rows.length ? rows.map((r) => ({ category: r.category, monthly_amount: String(r.monthly_amount) })) : [{ category: "", monthly_amount: "" }])).catch((e) => setError(e.message));
+    }, [open]);
+    const set = (i, k, v) => setLines((ls) => ls.map((l, j) => (j === i ? { ...l, [k]: v } : l)));
+    const fill = () => setLines((ls) => {
+      const have = new Set(ls.filter((l) => l.category).map((l) => l.category));
+      return [...ls.filter((l) => l.category), ...Object.entries(averages).filter(([c]) => !have.has(c)).map(([category, v]) => ({ category, monthly_amount: String(v) }))];
+    });
+    const save = async () => {
+      setBusy(true);
+      setError("");
+      try {
+        await api("PUT", "/api/budgets", { items: lines.filter((l) => l.category.trim()).map((l) => ({ category: l.category.trim(), monthly_amount: l.monthly_amount || 0 })) });
+        onSaved();
+      } catch (e) {
+        setError(e.message);
+      } finally {
+        setBusy(false);
+      }
+    };
+    const total = lines.reduce((sum, l) => sum + (Number(l.monthly_amount) || 0), 0);
+    return html`<${Modal} open=${open} onClose=${onClose} title="Monthly budget" description="How much you plan to spend each month, per category. The forecast uses this total." width=${620}
+      footer=${html`<${Button} variant="ghost" icon="sparkles" onClick=${fill}>Add 3-month averages<//><span style=${{ flex: 1 }} /><${Button} onClick=${onClose}>Cancel<//><${Button} variant="primary" disabled=${busy} onClick=${save}>${busy ? "Saving…" : "Save budget"}<//>`}>
+      <div style=${{ display: "grid", gap: 8 }}>
+        ${lines.map((l, i) => html`<div key=${i} style=${{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 140px 36px", gap: 8, alignItems: "center" }}>
+          <${TextInput} aria-label="Category" value=${l.category} onChange=${(v) => set(i, "category", v)} placeholder="Category" list="tx-categories" />
+          <${TextInput} aria-label=${`Monthly amount for ${l.category || "this line"}`} type="number" min="0" step="100" value=${l.monthly_amount} onChange=${(v) => set(i, "monthly_amount", v)} placeholder="R per month" />
+          <${Button} variant="ghost" icon="x" ariaLabel=${`Remove ${l.category || "line"}`} onClick=${() => setLines((ls) => ls.filter((_, j) => j !== i))} />
+        </div>`)}
+        <div style=${{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+          <${Button} size="sm" icon="plus" onClick=${() => setLines((ls) => [...ls, { category: "", monthly_amount: "" }])}>Add line<//>
+          <span class="tabular" style=${{ fontSize: 13.5 }}>Total <strong>${fmt.zar(total)}</strong> a month</span>
+        </div>
+      </div>
+      ${error && html`<div role="alert" style=${{ padding: "8px 12px", borderRadius: 8, background: "var(--danger-soft)", color: "var(--danger)", fontSize: 13 }}>${error}</div>`}
+    <//>`;
+  }
+  function BudgetPanel({ transactions, onChanged }) {
+    const { toast } = useApp();
+    const months = monthOptions(0, 12);
+    const [month, setMonth] = useState(months[0].value);
+    const [editing, setEditing] = useState(false);
+    const res = useResource(`/api/finance/budget?month=${month}`);
+    const current = month === months[0].value;
+    return html`<${Fragment}>
+      <div style=${{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
+        <${Select} ariaLabel="Month" value=${month} onChange=${setMonth} options=${months} />
+        <span style=${{ flex: 1 }} />
+        <${Button} icon="pencil" onClick=${() => setEditing(true)}>Edit budget<//>
+      </div>
+      <${Loaded} res=${res}>${(b) => b.rows.length === 0 && b.unbudgeted.length === 0 ? html`<${Card}><${EmptyState} icon="wallet" title="No budget yet" description="Set a monthly amount per category to see spending against plan, and to make the forecast use your plan." action=${html`<${Button} variant="primary" onClick=${() => setEditing(true)}>Set a budget<//>`} /><//>` : html`<${Grid} min=${380}>
+        <${Section} title=${current ? "This month so far" : months.find((m) => m.value === month).label} description=${b.totalBudget ? `${fmt.zar(b.totalActual)} spent of ${fmt.zar(b.totalBudget)} budgeted${current ? `, with ${Math.round(b.monthElapsed * 100)}% of the month gone` : ""}` : "No budget set"}>
+          ${b.totalBudget > 0 && html`<div style=${{ marginBottom: 6 }}><${UI.Progress} value=${(b.totalActual / b.totalBudget) * 100} tone=${b.totalActual > b.totalBudget ? "danger" : "primary"} label="Total spending against budget" marker=${current ? b.monthElapsed * 100 : null} markerLabel="How far through the month we are" /></div>`}
+          ${b.rows.map((r) => html`<${BudgetLine} key=${r.category} r=${r} elapsed=${b.monthElapsed} current=${current} />`)}
+        <//>
+        <${Section} title="Spending without a budget" description="Categories you spent on but haven't planned for.">
+          ${b.unbudgeted.length === 0 ? html`<${EmptyState} icon="check" title="Everything is budgeted" />` : b.unbudgeted.map((r) => html`<div class="list-row" key=${r.category}><span style=${{ flex: 1 }}>${r.category}</span><strong class="tabular">${fmt.zar(r.actual)}</strong></div>`)}
+        <//>
+      <//>`}<//>
+      <${BudgetEditor} open=${editing} transactions=${transactions} onClose=${() => setEditing(false)} onSaved=${() => { setEditing(false); toast("Budget saved"); res.reload(); onChanged(); }} />
+    <//>`;
+  }
+  function ForecastPanel() {
+    const [horizon, setHorizon] = useState("6");
+    const future = monthOptions(1, 12, 1);
+    const [spend, setSpend] = useState("");
+    const [spendFrom, setSpendFrom] = useState(future[0].value);
+    const [income, setIncome] = useState("");
+    const [incomeFrom, setIncomeFrom] = useState(future[0].value);
+    const q = useDebounced(`months=${horizon}&extra_spend=${Number(spend) || 0}&extra_spend_from=${spendFrom}&extra_income=${Number(income) || 0}&extra_income_from=${incomeFrom}`);
+    const res = useResource(`/api/finance/forecast?${q}`);
+    const label = (key) => fmt.month(key);
+    return html`<div style=${{ display: "grid", gap: 16 }}>
+      <${Card} style=${{ padding: 16 }}>
+        <div class="form-grid">
+          <${Field} id="fc-horizon" label="Look ahead"><${Select} id="fc-horizon" value=${horizon} onChange=${setHorizon} options=${[{ value: "6", label: "6 months" }, { value: "12", label: "12 months" }, { value: "18", label: "18 months" }]} style=${{ width: "100%" }} /><//>
+          <${Field} id="fc-spend" label="What if we spend more each month?" hint="e.g. a new hire at R25 000"><${TextInput} id="fc-spend" type="number" min="0" step="1000" value=${spend} onChange=${setSpend} placeholder="R0" /><//>
+          <${Field} id="fc-spend-from" label="Starting"><${Select} id="fc-spend-from" value=${spendFrom} onChange=${setSpendFrom} options=${future} style=${{ width: "100%" }} /><//>
+          <${Field} id="fc-income" label="What if we earn more each month?" hint="e.g. new schools signing"><${TextInput} id="fc-income" type="number" min="0" step="1000" value=${income} onChange=${setIncome} placeholder="R0" /><//>
+          <${Field} id="fc-income-from" label="Starting"><${Select} id="fc-income-from" value=${incomeFrom} onChange=${setIncomeFrom} options=${future} style=${{ width: "100%" }} /><//>
+        </div>
+      <//>
+      <${Loaded} res=${res}>${(f) => {
+        const last = f.projection[f.projection.length - 1];
+        const low = f.projection.reduce((m, p) => (p.cash < m.cash ? p : m), f.projection[0]);
+        const data = [
+          ...f.past.map((p, i) => ({ label: label(p.month), actual: p.cash, forecast: i === f.past.length - 1 ? p.cash : null })),
+          ...f.projection.map((p) => ({ label: label(p.month), actual: null, forecast: p.cash })),
+        ];
+        const a = f.assumptions;
+        return html`
+          <${Grid} min=${200}>
+            <${Kpi} label="Cash today" icon="wallet" value=${fmt.zar(f.cashNow)} />
+            <${Kpi} label=${`Cash in ${f.projection.length} months`} icon="trending-up" value=${fmt.zar(last.cash)} sub=${`${fmt.zar(last.cash - f.cashNow)} from today`} />
+            <${Kpi} label="Lowest point" icon="trending-down" value=${fmt.zar(low.cash)} sub=${label(low.month)} />
+            <${Card} style=${{ padding: 18, display: "grid", gap: 6, background: f.runOutMonth ? "var(--danger-soft)" : "var(--card)" }}>
+              <span style=${{ color: "var(--muted-fg)", fontSize: 13 }}>Cash runs out</span>
+              <span style=${{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 22, fontWeight: 600, color: f.runOutMonth ? "var(--danger)" : "var(--fg)" }}><${Icon} name=${f.runOutMonth ? "triangle-alert" : "shield-check"} size=${20} />${f.runOutMonth ? new Date(`${f.runOutMonth}-01T00:00:00`).toLocaleDateString("en-ZA", { month: "long", year: "numeric" }) : "Not in this period"}</span>
+              <span style=${{ fontSize: 12, color: "var(--muted-fg)" }}>${f.runOutMonth ? "Plan income or cuts before then." : `Cash stays above zero for the next ${f.projection.length} months.`}</span>
+            <//>
+          <//>
+          <${ChartCard} title="Cash, actual and forecast" description="Month-end balance. The dashed line is the forecast." format="zar" height=${260} data=${data}
+            series=${[{ key: "actual", label: "Cash (actual)", slot: 5, type: "line" }, { key: "forecast", label: "Cash (forecast)", slot: 5, type: "line", dashed: true }]} />
+          <${Card}>
+            <div style=${{ overflowX: "auto" }}>
+              <table style=${{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
+                <thead><tr>${["Month", "School contracts", "Other income", "Spending", "Net", "Cash at month end"].map((h, i) => html`<th key=${h} style=${{ textAlign: i ? "right" : "left", padding: "10px 16px", fontSize: 12, fontWeight: 500, color: "var(--muted-fg)", borderBottom: "1px solid var(--border)", whiteSpace: "nowrap" }}>${h}</th>`)}</tr></thead>
+                <tbody>${f.projection.map((p) => html`<tr key=${p.month} style=${{ borderBottom: "1px solid var(--border)" }}>
+                  <td style=${{ padding: "9px 16px", whiteSpace: "nowrap" }}>${label(p.month)}</td>
+                  <td class="tabular" style=${{ padding: "9px 16px", textAlign: "right" }}>${fmt.zar(Math.round(p.contractIncome))}</td>
+                  <td class="tabular" style=${{ padding: "9px 16px", textAlign: "right" }}>${fmt.zar(Math.round(p.otherIncome + p.extraIncome))}</td>
+                  <td class="tabular" style=${{ padding: "9px 16px", textAlign: "right" }}>${fmt.zar(Math.round(p.expense))}</td>
+                  <td class="tabular" style=${{ padding: "9px 16px", textAlign: "right" }}>${fmt.zar(Math.round(p.net))}</td>
+                  <td class="tabular" style=${{ padding: "9px 16px", textAlign: "right", fontWeight: 600, color: p.cash < 0 ? "var(--danger)" : undefined }}>${fmt.zar(Math.round(p.cash))}</td>
+                </tr>`)}</tbody>
+              </table>
+            </div>
+          <//>
+          <${Card} style=${{ padding: "14px 18px", fontSize: 13, color: "var(--muted-fg)", display: "grid", gap: 4 }}>
+            <strong style=${{ color: "var(--fg)", fontSize: 13.5 }}>How this is worked out</strong>
+            <span>School income comes from your contracts: each pays a twelfth of its yearly value every month it runs. Contracts waiting on a renewal decision count at your renewal rate of ${fmt.percent(a.renewalRate * 100)}${a.renewalRateFromHistory ? "" : " (an assumed rate until you have renewal history)"}.</span>
+            <span>Other income is your average of the last three full months: ${fmt.zar(Math.round(a.otherIncome))} a month (anything not categorised as “School contracts”).</span>
+            <span>Spending is ${a.expenseSource === "budget" ? "your monthly budget" : "your average of the last three full months"}: ${fmt.zar(Math.round(a.baseExpense))} a month${a.expenseSource === "budget" ? "" : ". Set a budget to plan with your own numbers"}.</span>
+          <//>`;
+      }}<//>
+    </div>`;
+  }
+  function FinanceView({ params }) {
     const { user, toast } = useApp();
+    const [tab, setTab] = useState(params.tab || "overview");
     const [months, setMonths] = useState("12");
     const summary = useResource(`/api/finance/summary?months=${months}`);
     const tx = useResource("/api/transactions");
+    const budget = useResource(`/api/finance/budget?month=${today().slice(0, 7)}`);
     const act = useAction();
     const [editing, setEditing] = useState(null);
     const [kind, setKind] = useState("");
@@ -898,15 +1366,11 @@
     const reload = () => {
       summary.reload();
       tx.reload();
+      budget.reload();
     };
     const item = editing && editing !== "new" ? editing : null;
     const categories = [...new Set((tx.data || []).map((t) => t.category))].sort();
-    return html`<${Fragment}>
-      <${PageHeader} title="Finance" description="Money in, money out, and how long the cash lasts." actions=${html`
-        <${Select} ariaLabel="Period" value=${months} onChange=${setMonths} options=${[{ value: "6", label: "Last 6 months" }, { value: "12", label: "Last 12 months" }, { value: "24", label: "Last 24 months" }]} />
-        <${Button} icon="upload" onClick=${() => setImporting(true)}>Import statement<//>
-        <${Button} variant="primary" icon="plus" onClick=${() => setEditing("new")}>Add transaction<//>`} />
-      <${Loaded} res=${summary}>${(s) => html`<div style=${{ display: "grid", gap: 16, marginBottom: 16 }}>
+    const overview = html`<${Loaded} res=${summary}>${(s) => html`<div style=${{ display: "grid", gap: 16 }}>
         ${s.openingBalance === 0 && atLeast(user, "admin") && html`<${Card} style=${{ padding: "12px 16px", background: "var(--gold-soft)", color: "var(--gold-fg)", fontSize: 13.5 }}>
           Tip: set your starting bank balance in <a href="#/team">Team & settings</a> so cash on hand is accurate.<//>`}
         <${Grid} min=${210}>
@@ -915,22 +1379,28 @@
           <${Kpi} label="Runway" icon="clock" value=${s.runwayMonths === null ? "—" : `${fmt.number(s.runwayMonths, { decimals: 1 })} months`} sub=${s.runwayMonths === null ? "Not burning cash" : "At the current burn rate"} />
           <${Kpi} label="Net this month" icon="trending-up" value=${fmt.zar(s.thisMonth.net)} sub=${`Last month: ${fmt.zar(s.lastMonth.net)}`} />
         <//>
-        <${Grid} min=${420}>
-          <${ChartCard} title="Income and spending by month" format="zar" height=${240}
-            data=${s.series.map((m) => ({ label: fmt.month(m.month), income: m.income, expense: m.expense }))}
-            series=${[{ key: "income", label: "Income", slot: 1, type: "bar" }, { key: "expense", label: "Spending", slot: 2, type: "bar" }]} />
+        <${ChartCard} title="Income and spending by month" format="zar" height=${240} actions=${html`<${Select} ariaLabel="Period" value=${months} onChange=${setMonths} options=${[{ value: "6", label: "6 months" }, { value: "12", label: "12 months" }, { value: "24", label: "24 months" }]} style=${{ height: 30, minWidth: 0, fontSize: 12.5 }} />`}
+          data=${s.series.map((m) => ({ label: fmt.month(m.month), income: m.income, expense: m.expense }))}
+          series=${[{ key: "income", label: "Income", slot: 1, type: "bar" }, { key: "expense", label: "Spending", slot: 2, type: "bar" }]} />
+        <${Grid} min=${380}>
           <${Section} title="Where the money goes" description="Spending by category, last 3 months">
             ${s.expenseCategories.length === 0 ? html`<${EmptyState} icon="receipt" title="No spending recorded" />` : html`<${BarList} items=${s.expenseCategories.slice(0, 8).map((c) => ({ label: c.category, value: c.total }))} format="zar" slot=${2} />`}
           <//>
+          <${Section} title="This month against budget" actions=${html`<button onClick=${() => setTab("budget")} style=${{ all: "unset", cursor: "pointer", fontSize: 13, color: "var(--primary)" }}>Budget</button>`}>
+            ${budget.data && budget.data.rows.length ? html`
+              <${Muted}>${fmt.zar(budget.data.totalActual)} of ${fmt.zar(budget.data.totalBudget)} with ${Math.round(budget.data.monthElapsed * 100)}% of the month gone<//>
+              ${budget.data.rows.slice(0, 4).map((r) => html`<${BudgetLine} key=${r.category} r=${r} elapsed=${budget.data.monthElapsed} current=${true} />`)}`
+              : html`<${EmptyState} icon="wallet" title="No budget yet" action=${html`<${Button} size="sm" onClick=${() => setTab("budget")}>Set a budget<//>`} />`}
+          <//>
         <//>
-      </div>`}<//>
-      <${Loaded} res=${tx}>${(rows) => {
+      </div>`}<//>`;
+    const transactions = html`<${Loaded} res=${tx}>${(rows) => {
         const shown = kind ? rows.filter((r) => r.kind === kind) : rows;
         return html`<${Card}><${Table} rows=${shown} search=${(t, q) => `${t.description} ${t.category} ${t.counterparty || ""}`.toLowerCase().includes(q)} searchPlaceholder="Search transactions…" pageSize=${20}
           onRowClick=${(t) => setEditing(t)}
           toolbar=${html`<${Select} ariaLabel="Type" value=${kind} onChange=${setKind} placeholder="Income and spending" options=${META.kind} />
             <span style=${{ flex: 1 }} /><${Button} size="sm" icon="download" onClick=${() => downloadCsv(`transactions-${today()}.csv`, [["Date", "Type", "Category", "Description", "Counterparty", "Amount"], ...shown.map((t) => [t.date, t.kind, t.category, t.description, t.counterparty, t.kind === "expense" ? -t.amount : t.amount])])}>Export CSV<//>`}
-          empty=${html`<${EmptyState} icon="receipt" title="No transactions yet" description="Record income and spending to see cash and runway." />`}
+          empty=${html`<${EmptyState} icon="receipt" title="No transactions yet" description="Record income and spending, or import a bank statement, to see cash and runway." />`}
           columns=${[
             { key: "date", header: "Date", sort: (t) => t.date, render: (t) => html`<span style=${{ whiteSpace: "nowrap" }}>${fmt.date(t.date)}</span>` },
             { key: "description", header: "Description", sort: (t) => t.description.toLowerCase(), render: (t) => html`${t.description}${t.counterparty && html`<br /><${Muted}>${t.counterparty}<//>`}` },
@@ -938,7 +1408,13 @@
             { key: "kind", header: "Type", hideOnMobile: true, render: (t) => html`<${StatusBadge} meta=${META.kind} value=${t.kind} />` },
             { key: "amount", header: "Amount", align: "right", sort: (t) => (t.kind === "expense" ? -t.amount : t.amount), render: (t) => html`<strong class="tabular" style=${{ fontWeight: 600, whiteSpace: "nowrap" }}>${t.kind === "expense" ? "−" : "+"}${fmt.zar(t.amount)}</strong>` },
           ]} /><//>`;
-      }}<//>
+      }}<//>`;
+    return html`<${Fragment}>
+      <${PageHeader} title="Finance" description="Money in, money out, the plan, and how long the cash lasts." actions=${html`
+        <${Button} icon="upload" onClick=${() => setImporting(true)}>Import statement<//>
+        <${Button} variant="primary" icon="plus" onClick=${() => setEditing("new")}>Add transaction<//>`} />
+      <${Tabs} value=${tab} onChange=${setTab} items=${[{ id: "overview", label: "Overview" }, { id: "transactions", label: "Transactions", count: tx.data ? tx.data.length : undefined }, { id: "budget", label: "Budget" }, { id: "forecast", label: "Forecast" }]} />
+      ${tab === "overview" ? overview : tab === "transactions" ? transactions : tab === "budget" ? html`<${BudgetPanel} transactions=${tx.data} onChanged=${reload} />` : html`<${ForecastPanel} />`}
       <${ImportModal} open=${importing} onClose=${() => setImporting(false)} onImported=${reload} />
       <datalist id="tx-categories">${[...new Set([...categories, "Salaries", "Software", "Marketing", "Equipment", "Rent", "Travel", "Subscriptions", "School contracts", "Grants"])].map((c) => html`<option key=${c} value=${c} />`)}</datalist>
       <${FormModal} open=${Boolean(editing)} onClose=${() => setEditing(null)} title=${item ? "Edit transaction" : "Add transaction"} fields=${TX_FIELDS} initial=${item || { date: today() }}
@@ -952,6 +1428,85 @@
           reload();
         }} />
       ${confirmDialog}
+    <//>`;
+  }
+
+  // ─────────────────────────── Stats ───────────────────────────
+  const LEVEL_ROWS = new Set(["cash", "arr", "schools", "learners"]);
+  /** Sequential shading within a row: one hue, light (low) to deeper (high). Text keeps the normal ink. */
+  const heat = (v, lo, hi) => (hi === lo ? "transparent" : `color-mix(in oklab, var(--chart-5) ${Math.round(6 + ((v - lo) / (hi - lo)) * 40)}%, var(--card))`);
+  function ChangeBadge({ row }) {
+    const vals = row.values;
+    const level = LEVEL_ROWS.has(row.key);
+    const now = level ? vals[vals.length - 1] : vals[vals.length - 2];
+    const before = level ? vals[vals.length - 2] : vals[vals.length - 3];
+    if (before === undefined || now === undefined) return null;
+    const diff = now - before;
+    if (diff === 0) return html`<${Badge}>No change<//>`;
+    const good = row.good === "down" ? diff < 0 : diff > 0;
+    const text = row.format === "zar" ? `${diff > 0 ? "+" : "−"}${fmt.zar(Math.abs(diff), { compact: true })}` : before ? fmt.delta((diff / Math.abs(before)) * 100) : `${diff > 0 ? "+" : ""}${diff}`;
+    return html`<${Badge} tone=${good ? "success" : "danger"} title=${level ? "This month against last month" : "Last full month against the month before"}><${Icon} name=${diff > 0 ? "arrow-up-right" : "arrow-down-right"} size=${12} />${text}<//>`;
+  }
+  function StatsView() {
+    const { user } = useApp();
+    const [tab, setTab] = useState("business");
+    const [months, setMonths] = useState("12");
+    const teamMonths = monthOptions(0, 6);
+    const [month, setMonth] = useState(teamMonths[0].value);
+    const res = useResource(`/api/stats?months=${months}&month=${month}`);
+    const cellPad = { padding: "8px 12px", whiteSpace: "nowrap" };
+    const sticky = { position: "sticky", left: 0, background: "var(--card)", zIndex: 1 };
+    const exportCsv = (m) => downloadCsv(`stats-${today()}.csv`, [["Metric", ...m.months], ...m.rows.map((r) => [r.label, ...r.values.map((v) => Math.round(v * 100) / 100)])]);
+    return html`<${Fragment}>
+      <${PageHeader} title="Stats" description=${atLeast(user, "manager") ? "The business month by month, and what each person is carrying." : "Schools and work month by month, and what each person is carrying."} actions=${tab === "business" ? html`
+        <${Select} ariaLabel="Months" value=${months} onChange=${setMonths} options=${[{ value: "6", label: "Last 6 months" }, { value: "12", label: "Last 12 months" }]} />
+        ${res.data && html`<${Button} icon="download" onClick=${() => exportCsv(res.data.matrix)}>Export CSV<//>`}` : html`<${Select} ariaLabel="Month" value=${month} onChange=${setMonth} options=${teamMonths} />`} />
+      <${Tabs} value=${tab} onChange=${setTab} items=${[{ id: "business", label: "Business" }, { id: "team", label: "Team" }]} />
+      <${Loaded} res=${res}>${(d) => {
+        if (tab === "team") {
+          const cols = [["openTasks", "Open tasks"], ["overdue", "Overdue"], ["completed", "Tasks done"], ["published", "Content published"], ["signed", "Schools signed"], ["notes", "School notes"]];
+          const range = Object.fromEntries(cols.map(([k]) => [k, [Math.min(...d.team.map((r) => r[k])), Math.max(...d.team.map((r) => r[k]))]]));
+          return html`<${Card}><div style=${{ overflowX: "auto" }}>
+            <table style=${{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
+              <thead><tr><th scope="col" style=${{ ...cellPad, ...sticky, textAlign: "left", fontSize: 12, fontWeight: 500, color: "var(--muted-fg)", borderBottom: "1px solid var(--border)" }}>Person</th>
+                ${cols.map(([k, h]) => html`<th key=${k} scope="col" style=${{ ...cellPad, textAlign: "right", fontSize: 12, fontWeight: 500, color: "var(--muted-fg)", borderBottom: "1px solid var(--border)" }}>${h}${["completed", "published", "signed", "notes"].includes(k) && html`<div style=${{ fontWeight: 400, fontSize: 11 }}>${teamMonths.find((m) => m.value === month).label.split(" ")[0]}</div>`}</th>`)}</tr></thead>
+              <tbody>${d.team.map((r) => html`<tr key=${r.id} style=${{ borderBottom: "1px solid var(--border)" }}>
+                <th scope="row" style=${{ ...cellPad, ...sticky, textAlign: "left", fontWeight: 400 }}><${UserChip} name=${r.name} subtitle=${r.job_title} /></th>
+                ${cols.map(([k]) => html`<td key=${k} class="tabular" style=${{ ...cellPad, textAlign: "right", background: k === "overdue" ? (r[k] ? "var(--danger-soft)" : "transparent") : heat(r[k], ...range[k]), color: k === "overdue" && r[k] ? "var(--danger)" : undefined, fontWeight: k === "overdue" && r[k] ? 600 : 400 }}>
+                  ${k === "overdue" && r[k] ? html`<span style=${{ display: "inline-flex", alignItems: "center", gap: 4 }}><${Icon} name="triangle-alert" size=${12} />${r[k]}</span>` : r[k]}
+                </td>`)}
+              </tr>`)}</tbody>
+            </table>
+          </div><//>`;
+        }
+        const m = d.matrix;
+        const thisMonth = today().slice(0, 7);
+        const groups = [...new Set(m.rows.map((r) => r.group))];
+        return html`<${Card}><div style=${{ overflowX: "auto" }}>
+          <table style=${{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+            <thead><tr>
+              <th scope="col" style=${{ ...cellPad, ...sticky, textAlign: "left", fontSize: 12, fontWeight: 500, color: "var(--muted-fg)", borderBottom: "1px solid var(--border)", minWidth: 190 }}>Metric</th>
+              <th scope="col" style=${{ ...cellPad, fontSize: 12, fontWeight: 500, color: "var(--muted-fg)", borderBottom: "1px solid var(--border)" }}>Trend</th>
+              <th scope="col" style=${{ ...cellPad, fontSize: 12, fontWeight: 500, color: "var(--muted-fg)", borderBottom: "1px solid var(--border)", borderRight: "1px solid var(--border)" }}>Change</th>
+              ${m.months.map((k, i) => html`<th key=${k} scope="col" style=${{ ...cellPad, textAlign: "right", fontSize: 12, fontWeight: 500, color: "var(--muted-fg)", borderBottom: "1px solid var(--border)" }}>${new Date(`${k}-01T00:00:00`).toLocaleDateString("en-ZA", { month: "short" })}${(i === 0 || k.endsWith("-01")) && html`<div style=${{ fontWeight: 400, fontSize: 11 }}>${k.slice(0, 4)}</div>`}${k === thisMonth && html`<div style=${{ fontWeight: 400, fontSize: 11 }}>so far</div>`}</th>`)}
+            </tr></thead>
+            <tbody>${groups.map((g) => html`<${Fragment} key=${g}>
+              <tr><th colSpan=${m.months.length + 3} scope="colgroup" style=${{ ...cellPad, textAlign: "left", fontSize: 11, letterSpacing: ".1em", textTransform: "uppercase", color: "var(--muted-fg)", background: "var(--subtle)", borderBottom: "1px solid var(--border)" }}>${g}</th></tr>
+              ${m.rows.filter((r) => r.group === g).map((r) => {
+                const lo = Math.min(...r.values), hi = Math.max(...r.values);
+                return html`<tr key=${r.key} style=${{ borderBottom: "1px solid var(--border)" }}>
+                  <th scope="row" style=${{ ...cellPad, ...sticky, textAlign: "left", fontWeight: 500 }}>${r.label}</th>
+                  <td style=${cellPad}><${UI.Sparkline} values=${r.values} label=${`${r.label} trend`} /></td>
+                  <td style=${{ ...cellPad, borderRight: "1px solid var(--border)" }}><${ChangeBadge} row=${r} /></td>
+                  ${r.values.map((v, i) => html`<td key=${i} class="tabular" title=${`${r.label}, ${new Date(`${m.months[i]}-01T00:00:00`).toLocaleDateString("en-ZA", { month: "long", year: "numeric" })}: ${fmt.value(v, r.format === "zar" ? "zar" : "number")}`} style=${{ ...cellPad, textAlign: "right", background: heat(v, lo, hi) }}>${r.format === "zar" ? fmt.zar(v, { compact: true }) : fmt.number(v)}</td>`)}
+                </tr>`;
+              })}
+            <//>`)}</tbody>
+          </table>
+        </div>
+        <div style=${{ padding: "10px 16px", fontSize: 12, color: "var(--muted-fg)", borderTop: "1px solid var(--border)" }}>Deeper shading means a higher value within that row. Change compares the last full month with the one before, or this month with last month for running totals like cash and recurring revenue.</div>
+        <//>`;
+      }}<//>
     <//>`;
   }
 
@@ -970,6 +1525,8 @@
       `Runway: ${m.runwayMonths === null ? "not burning cash (income covers spending)" : `about ${fmt.number(m.runwayMonths, { decimals: 1 })} months at ${fmt.zar(m.avgBurn)} average monthly burn`}`,
       "",
       "SCHOOLS",
+      `Annual recurring revenue: ${fmt.zar(r.contracts.arr)}${r.contracts.arrStart ? ` (${fmt.delta(pctChange(r.contracts.arr, r.contracts.arrStart))} this month)` : ""} across ${r.contracts.schools} schools`,
+      r.contracts.renewed || r.contracts.notRenewed ? `Renewals: ${r.contracts.renewed} renewed, ${r.contracts.notRenewed} not renewing` : null,
       r.schools.won.length ? `Signed this month: ${r.schools.won.map((w) => `${w.school} (${fmt.zar(w.value)}/year${w.learners ? `, ${w.learners} learners` : ""})`).join("; ")}` : "No new schools signed this month.",
       `New leads: ${r.schools.newLeads} · Open pipeline: ${fmt.zar(r.schools.openPipeline.value)} across ${r.schools.openPipeline.n} schools`,
       `Learners signed in total: ${fmt.number(r.schools.learnersSigned)}`,
@@ -980,7 +1537,7 @@
       "TEAM",
       `Tasks completed: ${r.tasksDone}`,
       `Spending approved: ${r.approvals.approved} request${r.approvals.approved === 1 ? "" : "s"} (${fmt.zar(r.approvals.approvedAmount)})${r.approvals.rejected ? ` · ${r.approvals.rejected} declined` : ""}`,
-    ];
+    ].filter((line) => line !== null);
     if (r.decisions.length) {
       lines.push("", "KEY DECISIONS");
       for (const d of r.decisions) for (const item of d.items) lines.push(`- ${item} (${d.meeting}, ${fmt.shortDate(d.date)})`);
@@ -1033,6 +1590,8 @@
             ${m.incomeBySource.length > 0 && html`<div style=${{ fontSize: 13 }}><${Muted}>Income by source: ${m.incomeBySource.map((c) => `${c.category} ${fmt.zar(c.total)}`).join(" · ")}<//></div>`}
             ${m.topSpending.length > 0 && html`<${BarList} items=${m.topSpending.map((c) => ({ label: c.category, value: c.total }))} format="zar" slot=${2} />`}`)}
           ${block("Schools", html`
+            ${row("Annual recurring revenue", fmt.zar(r.contracts.arr), `${r.contracts.arrStart ? `${fmt.delta(pctChange(r.contracts.arr, r.contracts.arrStart))} this month · ` : ""}${r.contracts.schools} schools`)}
+            ${(r.contracts.renewed > 0 || r.contracts.notRenewed > 0) && row("Renewals", `${r.contracts.renewed} renewed`, r.contracts.notRenewed ? `${r.contracts.notRenewed} not renewing` : null)}
             ${r.schools.won.length ? r.schools.won.map((w) => html`<div key=${w.school} style=${{ display: "flex", alignItems: "center", gap: 8, fontSize: 14 }}><${Badge} tone="success" dot>Signed<//><strong style=${{ fontWeight: 500 }}>${w.school}</strong><${Muted}>${fmt.zar(w.value)}/year${w.learners ? ` · ${w.learners} learners` : ""}<//></div>`) : html`<${Muted}>No new schools signed this month.<//>`}
             ${row("New leads", fmt.number(r.schools.newLeads))}
             ${row("Open pipeline", fmt.zar(r.schools.openPipeline.value), `${r.schools.openPipeline.n} schools`)}`)}
@@ -1636,11 +2195,14 @@
     { group: "Work", path: "dashboard", label: "Dashboard", icon: "layout-dashboard", view: DashboardView },
     { group: "Work", path: "tasks", label: "Tasks", icon: "list-checks", view: TasksView },
     { group: "Work", path: "calendar", label: "Calendar", icon: "calendar-days", view: CalendarView },
-    { group: "Work", path: "pipeline", label: "Schools pipeline", icon: "school", view: PipelineView },
+    { group: "Work", path: "goals", label: "Goals", icon: "target", view: GoalsView },
     { group: "Work", path: "content", label: "Content", icon: "video", view: ContentView },
+    { group: "Schools", path: "pipeline", label: "Schools pipeline", icon: "school", view: PipelineView },
+    { group: "Schools", path: "contracts", label: "Contracts & renewals", icon: "landmark", view: ContractsView },
     { group: "Money", path: "finance", label: "Finance", icon: "wallet", view: FinanceView, minRole: "manager" },
     { group: "Money", path: "approvals", label: "Approvals", icon: "circle-check", view: ApprovalsView },
-    { group: "Money", path: "report", label: "Monthly update", icon: "file-text", view: ReportView, minRole: "manager" },
+    { group: "Insights", path: "stats", label: "Stats", icon: "grid-3x3", view: StatsView },
+    { group: "Insights", path: "report", label: "Monthly update", icon: "book-open", view: ReportView, minRole: "manager" },
     { group: "Team", path: "meetings", label: "Meetings", icon: "notebook-pen", view: MeetingsView },
     { group: "Team", path: "documents", label: "Documents", icon: "folder-open", view: DocumentsView },
     { group: "Team", path: "team", label: "Team & settings", icon: "users", view: TeamView },

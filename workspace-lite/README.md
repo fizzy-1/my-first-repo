@@ -12,10 +12,13 @@ A small team workspace for Integral Academy that runs on one of your own compute
 |---|---|
 | **Dashboard** | Cash and runway (managers), your tasks, overdue work, school follow-ups due this week, pending approvals, content progress, upcoming meetings, team activity |
 | **Tasks** | List or board view; assign, prioritise, set due dates, tick off; weekly or monthly repeating tasks schedule their next copy automatically |
+| **Goals** | Targets with deadlines and an on-track / at-risk / behind status against a straight-line pace. Most goals track themselves from the workspace (schools signed, learners, content published, new leads, income, recurring revenue); others are updated by hand with a short history |
 | **Calendar** | Month view (agenda list on phones) of meetings, task deadlines, school follow-ups and content due dates; filter to just your own |
 | **Schools pipeline** | Schools from first contact to signed, with deal value, learner numbers, follow-up dates, call notes and one-click follow-up tasks |
+| **Contracts & renewals** | Each school's contract term and yearly value, annual recurring revenue, renewal rate, and the renewals that need a decision. 60 and 30 days before a contract ends the school's owner and the managers get a notification and a renewal task; renew or record "not renewing" in one click |
 | **Content** | Board for videos, lessons, worksheets, quizzes and past-paper memos: Idea → Recording → Editing → Review → Published |
-| **Finance** *(managers)* | Income and spending, cash on hand, monthly burn, runway, spending by category, CSV export; **import a bank statement** (CSV from FNB, Standard Bank, Absa, Nedbank, Capitec and others), with rows already recorded skipped and categories reused from earlier transactions |
+| **Finance** *(managers)* | Tabs for **Overview** (cash, burn, runway, this month against budget), **Transactions** (CSV export), **Budget** (a monthly amount per category, spending against it) and **Forecast** (cash month by month for the next 6–18 months from your contracts, other income and budget, with "what if we hire / earn more" inputs and the month cash would run out); **import a bank statement** (CSV from FNB, Standard Bank, Absa, Nedbank, Capitec and others), with rows already recorded skipped and categories reused from earlier transactions |
+| **Stats** | A month-by-month matrix of the business (money for managers; recurring revenue, schools and learners under contract, leads, schools signed, content, tasks, meetings) with shading, trend lines and change, plus a team view of what each person is carrying. Export as CSV |
 | **Monthly update** *(managers)* | One-page summary of the month: money, schools signed, content published, tasks done, approvals and key decisions. Copy it as text for an email, or print it / save as PDF |
 | **Approvals** | Anyone can request spending approval. A manager approves or rejects it with a note. Nobody can approve their own request |
 | **Meetings** | Notes and decisions. Action items become tasks on the team's list |
@@ -102,6 +105,10 @@ All settings are optional environment variables:
 `preview/` holds a version of the app that runs entirely in a web browser, for showing people the workspace without installing anything. It uses the same screens as the real app with demo data. A stand-in for the server (`preview/mock-api.js`) answers requests inside the browser and follows the same permission rules. A "Preview" bar lets you switch between the demo accounts, reset the data, or start empty to see first-time setup. Changes stay in that browser only, and files can be viewed but not downloaded.
 
 To rebuild the preview page after changing `public/index.html`, run `node preview/build.mjs`.
+
+The calculations for goals, renewals, budgets, the forecast and stats live in `public/metrics.js`, and the demo story in `preview/demo-data.js`. The server, `seed.js` and the preview all use these same files, so the numbers always agree.
+
+**School income in the forecast** comes from the contracts, so record school payments under the category "School contracts". That way they aren't counted twice.
 
 ## How it's built
 

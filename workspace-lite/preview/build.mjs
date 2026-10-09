@@ -1,5 +1,5 @@
 // Builds preview/index.html (the online preview page) from public/index.html.
-// Publish it with these files next to it: icons.js, ui.js, app.js and crest.png from public/, plus preview/mock-api.js.
+// Publish it with these files next to it: icons.js, metrics.js, ui.js, app.js and crest.png from public/, plus preview/mock-api.js and preview/demo-data.js.
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -47,6 +47,8 @@ ${boot}
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/htm@3.1.1/dist/htm.umd.js"></script>
 <script src="icons.js"></script>
+<script src="metrics.js"></script>
+<script src="demo-data.js"></script>
 <script src="ui.js"></script>
 <script src="mock-api.js"></script>
 <script src="app.js"></script>
