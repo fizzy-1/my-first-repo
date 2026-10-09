@@ -1,14 +1,17 @@
-/* Integral Workspace Lite — online preview.
+/* Integral Workspace Lite — in-browser server for claude.ai.
  * Stands in for server.js inside the browser so the real app (public/app.js) runs unchanged:
- * every /api request is answered here from demo data kept in this browser (localStorage).
- * Permission rules mirror server.js. Also adds a small "Preview" bar for switching between demo accounts. */
+ * every /api request is answered here. Permission rules mirror server.js. Two modes:
+ *  - Preview (default): demo data kept in this browser (localStorage), plus a "Preview" bar for switching demo accounts.
+ *  - Hosted (window.WS_HOSTED): the team's real data in the artifact's shared database, people signed in with their
+ *    claude.ai accounts, roles from the Share menu (Owner = admin, Editor = manager, Contributor = member). */
 (function () {
   "use strict";
+  const HOSTED = Boolean(window.WS_HOSTED);
   const STORE_KEY = "integral-workspace-lite-preview-v3";
   const M = window.WSMetrics;
-  window.WS_PREVIEW = true;
+  window.WS_PREVIEW = true; // no printing or direct file saves inside claude.ai
   const DEMO_PASSWORD = "integral-demo-2026";
-  const MAX_UPLOAD = 2 * 1024 * 1024;
+  const MAX_UPLOAD = (HOSTED ? 5 : 2) * 1024 * 1024;
 
   // ─────────────────────────── Dates ───────────────────────────
   const pad = (n) => String(n).padStart(2, "0");
@@ -57,9 +60,13 @@
     for (const t of TABLES) out[t] = [];
     return out;
   }
+  // Hosted rows get random numeric ids so two people adding things at once never collide.
+  const cloudId = () => Math.floor(Date.now() * 1000 + Math.random() * 1000);
   function insert(table, data) {
-    db.seq[table] = (db.seq[table] || 0) + 1;
-    const row = { id: db.seq[table], ...DEFAULTS[table], ...data, created_at: data.created_at || nowIso() };
+    let id;
+    if (HOSTED) id = cloudId();
+    else id = db.seq[table] = (db.seq[table] || 0) + 1;
+    const row = { id, ...DEFAULTS[table], ...data, created_at: data.created_at || nowIso() };
     for (const k of Object.keys(row)) if (row[k] === undefined) row[k] = null;
     db[table].push(row);
     return row;
@@ -71,7 +78,305 @@
     db.settings[k] = String(v);
   };
 
+  // ─────────────────────────── Hosted: the team's shared database on claude.ai ───────────────────────────
+  // Rows live in the artifact's database, one document each; this browser keeps a live copy in memory (db above),
+  // answers the app's requests from it, and writes back only the documents a request changed.
+  const cloud = { state: "loading", ready: Promise.resolve(), db: null, user: null, uid: null, level: null, role: null, myName: "", busy: 0, pending: [], remote: new Map(), shadow: new Map(), chains: new Map() };
+  const HOSTED_MESSAGES = {
+    unavailable: "This workspace runs inside claude.ai. Open it from claude.ai while signed in.",
+    signed_out: "Sign in to claude.ai to open the workspace.",
+    view_only: "You can see this page but not use the workspace. Ask the owner to share it with you as an Editor, or as a Contributor where their plan offers it.",
+    deactivated: "An admin has turned off your access to this workspace. Ask them to turn it back on.",
+    error: "The workspace couldn't load its data. Reload the page to try again.",
+  };
+  const ROLE_FOR_LEVEL = { owner: "admin", admin: "manager", interact: "member" };
+  const canWriteMoney = () => cloud.level === "owner" || cloud.level === "admin";
+  const myRow = () => db.users.find((u) => u.uid === cloud.uid);
+  const notice = (message) => window.dispatchEvent(new CustomEvent("ws:notice", { detail: { message } }));
+  // Money (transactions, manager-only activity, private files, opening balance, budgets) lives under "money/", which the
+  // database itself lets only Editors and the Owner read or write. Everything else is shared with the team.
+  const COLLECTIONS = [
+    ["tasks", "tasks"], ["leads", "leads"], ["lead_notes", "lead_notes"], ["content", "content"], ["meetings", "meetings"],
+    ["approvals", "approvals"], ["notifications", "notifications"], ["contracts", "contracts"], ["goals", "goals"], ["goal_updates", "goal_updates"],
+    ["users", "members"], ["activity", "activity"], ["documents", "documents"],
+    ["activity", "money/ledger/activity"], ["transactions", "money/ledger/transactions"], ["documents", "money/vault/documents"],
+  ];
+  function pathFor(table, row) {
+    if (table === "users") return `members/${row.uid}`;
+    if (table === "transactions") return `money/ledger/transactions/${row.id}`;
+    if (table === "activity") return row.audience === "manager" ? `money/ledger/activity/${row.id}` : `activity/${row.id}`;
+    if (table === "documents") return row.private ? `money/vault/documents/${row.id}` : `documents/${row.id}`;
+    return `${table}/${row.id}`;
+  }
+  const isMoneyPath = (path) => path.startsWith("money/");
+  /** JSON with sorted keys, so the same data always compares equal whichever side wrote it. */
+  function canon(value) {
+    if (Array.isArray(value)) return `[${value.map(canon).join(",")}]`;
+    if (value && typeof value === "object") return `{${Object.keys(value).filter((k) => value[k] !== undefined).sort().map((k) => `${JSON.stringify(k)}:${canon(value[k])}`).join(",")}}`;
+    return JSON.stringify(value === undefined ? null : value);
+  }
+  function serialize(table, row) {
+    const copy = { ...row };
+    if (table === "users") {
+      delete copy.name; // names come from claude.ai profiles (or the person's own display name) when shown
+      delete copy.email;
+      delete copy.password;
+    }
+    return canon(copy);
+  }
+  /** Every document this browser believes should exist, as path → canonical JSON. */
+  function localDocs() {
+    const out = new Map();
+    for (const table of TABLES)
+      for (const row of db[table]) {
+        const path = pathFor(table, row);
+        if (!isMoneyPath(path) || canWriteMoney()) out.set(path, serialize(table, row));
+      }
+    if (db.settings.company_name != null || cloud.shadow.has("meta/settings")) out.set("meta/settings", canon({ company_name: db.settings.company_name ?? null }));
+    if (canWriteMoney()) {
+      const money = { opening_balance: db.settings.opening_balance ?? null, opening_date: db.settings.opening_date ?? null, last_backup_at: db.settings.last_backup_at ?? null };
+      if (Object.values(money).some((v) => v !== null) || cloud.shadow.has("money/settings")) out.set("money/settings", canon(money));
+      if (db.budgets.length || cloud.shadow.has("money/budgets")) out.set("money/budgets", canon({ items: db.budgets }));
+    }
+    return out;
+  }
+  // Writes go through a small queue: a few at a time, retrying when the database asks us to slow down.
+  const queue = [];
+  let active = 0;
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  function queued(task) {
+    return new Promise((resolve, reject) => {
+      queue.push({ task, resolve, reject, tries: 0 });
+      pump();
+    });
+  }
+  function pump() {
+    while (active < 6 && queue.length) {
+      const job = queue.shift();
+      active++;
+      job.task().then(job.resolve, async (e) => {
+        if (e && (e.code === "resource_exhausted" || e.code === "unavailable") && job.tries < 5) {
+          job.tries++;
+          await sleep(700 * job.tries + Math.random() * 500);
+          queue.push(job);
+        } else job.reject(e);
+      }).finally(() => {
+        active--;
+        pump();
+      });
+    }
+  }
+  function writeDoc(path, body) {
+    const prev = cloud.chains.get(path) || Promise.resolve();
+    const next = prev.then(() => queued(() => (body === null ? cloud.db.doc(path).delete() : cloud.db.doc(path).set(body)))).catch((e) => syncFailed(path, e));
+    cloud.chains.set(path, next);
+    next.then(() => cloud.chains.get(path) === next && cloud.chains.delete(path));
+    return next;
+  }
+  function syncFailed(path, e) {
+    notice(e && e.code === "quota_exceeded" ? "The workspace's storage is full. Delete old records or files to make room."
+      : e && e.code === "invalid_argument" ? "You don't have permission to change that, so it wasn't saved."
+      : "A change couldn't be saved. Check your connection and try again.");
+    cloud.shadow.delete(path);
+    const body = cloud.remote.get(path);
+    applyDoc(path, body === undefined ? null : JSON.parse(body)); // back to what the database holds
+    remoteChanged();
+  }
+  /** Sends this browser's changes: new or edited documents are written, removed ones deleted. */
+  function cloudSync() {
+    if (cloud.state !== "ready" && cloud.state !== "joining") return;
+    const local = localDocs();
+    for (const [path, json] of local) if (cloud.shadow.get(path) !== json) {
+      cloud.shadow.set(path, json);
+      writeDoc(path, JSON.parse(json));
+    }
+    for (const path of [...cloud.shadow.keys()]) if (!local.has(path) && (!isMoneyPath(path) || canWriteMoney())) {
+      cloud.shadow.delete(path);
+      writeDoc(path, null);
+    }
+  }
+  function applyDoc(path, body) {
+    if (path === "meta/settings") {
+      if (body && body.company_name != null) db.settings.company_name = String(body.company_name);
+      return;
+    }
+    if (path === "money/settings") {
+      for (const k of ["opening_balance", "opening_date", "last_backup_at"]) if (body && body[k] != null) db.settings[k] = String(body[k]);
+      return;
+    }
+    if (path === "money/budgets") {
+      db.budgets = body && Array.isArray(body.items) ? body.items.map((b) => ({ ...b })) : [];
+      return;
+    }
+    const cut = path.lastIndexOf("/");
+    const coll = path.slice(0, cut);
+    const docId = path.slice(cut + 1);
+    const entry = COLLECTIONS.find(([, c]) => c === coll);
+    if (!entry) return;
+    const table = entry[0];
+    const i = db[table].findIndex(table === "users" ? (r) => r.uid === docId : (r) => String(r.id) === docId && pathFor(table, r) === path);
+    if (!body) {
+      if (i >= 0) db[table].splice(i, 1);
+      return;
+    }
+    const row = { ...DEFAULTS[table], ...body };
+    if (table === "users" && i >= 0) row.name = db[table][i].name;
+    if (i >= 0) db[table][i] = row;
+    else db[table].push(row);
+  }
+  let remoteTimer = null;
+  function remoteChanged() {
+    clearTimeout(remoteTimer);
+    remoteTimer = setTimeout(() => window.dispatchEvent(new Event("ws:remote")), 600);
+  }
+  /** Changes arriving from the database (other people, or our own writes confirmed). */
+  function receive(changes) {
+    if (cloud.busy) {
+      cloud.pending.push(...changes); // applied once the request in progress has finished
+      return;
+    }
+    let changed = false;
+    for (const { path, body } of changes) {
+      const json = body ? canon(body) : null;
+      if (json === null) cloud.remote.delete(path);
+      else cloud.remote.set(path, json);
+      if ((cloud.shadow.get(path) ?? null) === json) continue; // our own write coming back
+      if (json === null) cloud.shadow.delete(path);
+      else cloud.shadow.set(path, json);
+      applyDoc(path, json === null ? null : JSON.parse(json));
+      changed = true;
+    }
+    if (changed) remoteChanged();
+  }
+  function flushPending() {
+    if (cloud.busy || !cloud.pending.length) return;
+    const changes = cloud.pending.splice(0);
+    receive(changes);
+  }
+  async function resolveNames() {
+    if (cloud.state !== "ready") return;
+    const uids = db.users.map((u) => u.uid).filter(Boolean);
+    const profiles = uids.length ? await cloud.user.profiles(uids) : {};
+    for (const u of db.users) u.name = u.display_name || (profiles[u.uid] && profiles[u.uid].name) || "Team member";
+    const mine = myRow();
+    if (mine) cloud.myName = mine.name;
+  }
+  /** Keeps the database small: notifications older than 90 days and all but the latest 300 activity lines go. */
+  function pruneOld() {
+    const cutoff = new Date(Date.now() - 90 * 86400000).toISOString();
+    const before = db.notifications.length + db.activity.length;
+    db.notifications = db.notifications.filter((n) => String(n.created_at) >= cutoff);
+    for (const audience of ["all", "manager"]) {
+      const lines = sortBy(db.activity.filter((a) => (a.audience || "all") === audience), (a, b) => cmp(String(b.created_at), String(a.created_at)));
+      const drop = new Set(lines.slice(300).map((a) => a.id));
+      if (drop.size) db.activity = db.activity.filter((a) => !drop.has(a.id));
+    }
+    return before !== db.notifications.length + db.activity.length;
+  }
+  async function startCloud() {
+    try {
+      cloud.db = await window.claude.use("db");
+      cloud.user = await window.claude.use("user");
+      if (!cloud.db || !cloud.user) return void (cloud.state = "unavailable");
+      const me = await cloud.user.me();
+      if (!me.id) return void (cloud.state = "signed_out");
+      cloud.uid = me.id;
+      cloud.myName = me.name;
+      const write = await cloud.user.can("data.write");
+      cloud.level = me.isOwner ? "owner" : me.canEdit ? "admin" : write === false ? "view" : "interact";
+      if (cloud.level === "view") return void (cloud.state = "view_only");
+      cloud.role = ROLE_FOR_LEVEL[cloud.level];
+      const collections = COLLECTIONS.map(([, c]) => c).filter((c) => canWriteMoney() || !isMoneyPath(c));
+      const docs = ["meta/settings", ...(canWriteMoney() ? ["money/settings", "money/budgets"] : [])];
+      const onError = (e) => notice(e && e.code === "revoked" ? "Your access to this workspace changed. Reload the page." : "Live updates stopped. Reload the page to reconnect.");
+      await new Promise((resolve) => {
+        let waiting = collections.length + docs.length;
+        const arrived = () => --waiting <= 0 && resolve();
+        setTimeout(resolve, 12000);
+        for (const c of collections) {
+          let first = true;
+          cloud.db.collection(c).onSnapshot((snap) => {
+            receive(snap.docChanges().map((ch) => ({ path: `${c}/${ch.doc.id}`, body: ch.type === "removed" ? null : ch.doc.data() })));
+            if (first) {
+              first = false;
+              arrived();
+            }
+          }, onError);
+        }
+        for (const d of docs) {
+          let first = true;
+          cloud.db.doc(d).onSnapshot((snap) => {
+            receive([{ path: d, body: snap.exists ? snap.data() : null }]);
+            if (first) {
+              first = false;
+              arrived();
+            }
+          }, onError);
+        }
+      });
+      // Joining: everyone who opens the workspace gets a member record; their role follows their sharing level.
+      cloud.state = "joining";
+      const mine = myRow();
+      if (!mine) insert("users", { uid: cloud.uid, role: cloud.role, job_title: null, active: 1, display_name: null });
+      else if (mine.role !== cloud.role) mine.role = cloud.role;
+      if (myRow() && !myRow().active) {
+        cloudSync();
+        return void (cloud.state = "deactivated");
+      }
+      pruneOld();
+      cloud.state = "ready";
+      const lease = await cloud.db.doc("locks/renewals").acquire({ holder: cloud.uid, ttlMs: 60000 }).catch(() => ({ acquired: false }));
+      if (lease.acquired) checkRenewals(); // one person at a time sends renewal reminders
+      cloudSync();
+    } catch (error) {
+      console.error(error);
+      cloud.state = "error";
+    }
+  }
+
+  // Files are stored in the database in pieces (each document holds up to 256 KB).
+  const CHUNK = 180000;
+  const filePath = (doc, i) => `${doc.private ? "money/vault/filedata" : "filedata"}/${doc.storage_key}/parts/${i}`;
+  const readDataUrl = (blob) => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(new HttpError(422, "Couldn't read that file."));
+    reader.readAsDataURL(blob);
+  });
+  async function storeFile(doc, blob) {
+    const url = await readDataUrl(blob);
+    const parts = [];
+    for (let i = 0; i < url.length; i += CHUNK) parts.push(url.slice(i, i + CHUNK));
+    try {
+      await Promise.all(parts.map((d, i) => queued(() => cloud.db.doc(filePath(doc, i)).set({ d }))));
+    } catch (e) {
+      throw new HttpError(507, e && e.code === "quota_exceeded" ? "The workspace's storage is full. Delete old files to make room." : "The file couldn't be stored. Try again.");
+    }
+    return parts.length;
+  }
+  async function readFile(doc) {
+    const snaps = await Promise.all(Array.from({ length: doc.parts || 0 }, (_, i) => cloud.db.doc(filePath(doc, i)).get()));
+    if (!snaps.length || snaps.some((sn) => !sn.exists)) throw new Error("missing");
+    return snaps.map((sn) => sn.data().d).join("");
+  }
+  function dataUrlToBlob(url, type) {
+    const bytes = atob(url.slice(url.indexOf(",") + 1));
+    const buf = new Uint8Array(bytes.length);
+    for (let i = 0; i < bytes.length; i++) buf[i] = bytes.charCodeAt(i);
+    return new Blob([buf], { type });
+  }
+  async function saveFile(filename, data) {
+    const downloads = await window.claude.use("downloads");
+    if (!downloads) return notice("Saving files isn't available in this view.");
+    try {
+      await downloads.save({ filename, data });
+    } catch (e) {
+      if (e && e.code !== "declined") notice(e.code === "rejected_extension" ? "That type of file can't be saved from here." : "The file couldn't be saved.");
+    }
+  }
+
   function persist() {
+    if (HOSTED) return cloudSync();
     try {
       localStorage.setItem(STORE_KEY, JSON.stringify({ ...db, files }));
     } catch {
@@ -380,7 +685,7 @@
   function notify(userIds, actor, message, link) {
     for (const id of new Set([].concat(userIds))) {
       const target = id && id !== actor.id && byId("users", id);
-      if (target && target.active) insert("notifications", { user_id: id, message, link: link ?? null });
+      if (target && target.active) insert("notifications", { user_id: id, actor_id: actor.id || null, message, link: link ?? null });
     }
   }
   function advance(dateStr, recurrence) {
@@ -590,7 +895,7 @@
       upcomingMeetings: sortBy(db.meetings.filter((m) => m.date >= today), (a, b) => cmp(a.date, b.date)).slice(0, 5),
       goals: goalRows(user).filter((g) => !g.archived && g.progress.status !== "missed").slice(0, 4),
       renewals: { summary: M.renewalSummary(db.contracts, today), due: contractRows().filter((c) => ["due", "lapsed"].includes(c.state)).slice(0, 5) },
-      activity: sortBy(db.activity.filter((a) => manager || a.audience === "all"), (a, b) => b.id - a.id).slice(0, 12).map((a) => ({ summary: a.summary, created_at: a.created_at, user_name: userName(a.user_id) })),
+      activity: sortBy(db.activity.filter((a) => manager || a.audience === "all"), (a, b) => b.id - a.id).slice(0, 12).map((a) => ({ summary: String(a.summary).replace("{actor}", userName(a.user_id) || "Someone"), created_at: a.created_at, user_name: userName(a.user_id) })),
     };
   }
   const canSeeDoc = (user, d) => !d.private || d.uploaded_by === user.id || atLeast(user, "manager");
@@ -603,6 +908,10 @@
 
   // ─────────────────────────── Request handling ───────────────────────────
   const currentUser = () => {
+    if (HOSTED) {
+      const me = cloud.state === "ready" ? myRow() : null;
+      return me && me.active ? { id: me.id, name: "{actor}", email: null, role: cloud.role, job_title: me.job_title, must_change_password: false } : null;
+    }
     const u = db.session ? byId("users", db.session) : null;
     return u && u.active ? { id: u.id, name: u.name, email: u.email, role: u.role, job_title: u.job_title, must_change_password: Boolean(u.must_change_password) } : null;
   };
@@ -627,6 +936,13 @@
     };
     if (method !== "GET" && headers["x-requested-with"] !== "workspace") throw new HttpError(403, "Request blocked.");
 
+    if (HOSTED && parts[0] === "auth") {
+      if (parts[1] === "status" && method === "GET") {
+        const u = currentUser();
+        return [200, { setupRequired: false, user: u ? { ...u, name: cloud.myName || "there" } : null, company: getSetting("company_name", "Integral Academy"), hosted: { state: cloud.state, message: HOSTED_MESSAGES[cloud.state] || null } }];
+      }
+      throw new HttpError(404, "Signing in is handled by claude.ai in the hosted workspace.");
+    }
     if (parts[0] === "auth") {
       const userCount = db.users.length;
       if (parts[1] === "status" && method === "GET") return [200, { setupRequired: userCount === 0, user: currentUser(), company: getSetting("company_name", "Integral Academy") }];
@@ -688,7 +1004,7 @@
     }
     if (parts[0] === "notifications") {
       const mine = db.notifications.filter((n) => n.user_id === user.id);
-      if (method === "GET" && !parts[1]) return [200, { unread: mine.filter((n) => !n.read_at).length, items: sortBy(mine, (a, b) => b.id - a.id).slice(0, 30).map(({ id, message, link, read_at, created_at }) => ({ id, message, link, read_at, created_at })) }];
+      if (method === "GET" && !parts[1]) return [200, { unread: mine.filter((n) => !n.read_at).length, items: sortBy(mine, (a, b) => cmp(String(b.created_at), String(a.created_at)) || b.id - a.id).slice(0, 30).map(({ id, actor_id, message, link, read_at, created_at }) => ({ id, message: String(message).replace("{actor}", (byId("users", actor_id) || {}).name || "Someone"), link, read_at, created_at })) }];
       if (method === "POST" && parts[1] === "read") {
         const input = body();
         const ids = Array.isArray(input.ids) ? input.ids.map(Number) : null;
@@ -807,6 +1123,21 @@
       ]];
     }
 
+    if (HOSTED && parts[0] === "users") {
+      if (method === "GET") return [200, sortBy(db.users, (a, b) => b.active - a.active, (a, b) => cmp(a.name, b.name)).map((u) => ({ id: u.id, name: u.name, email: null, role: u.role, job_title: u.job_title, active: u.active, created_at: u.created_at, display_name: u.display_name || null }))];
+      if (method === "POST") throw new HttpError(403, "To add someone, share this page with them from claude.ai's Share menu.");
+      const target = byId("users", parts[1]);
+      if (!target) throw new HttpError(404, "Not found.");
+      if (method === "PATCH") {
+        const input = body();
+        const self = target.id === user.id;
+        if (!self && !atLeast(user, "admin")) throw new HttpError(403, "Only an admin can change other people's details.");
+        const data = validate(self ? { display_name: { type: "text", max: 80 }, job_title: { type: "text", max: 120 } } : { job_title: { type: "text", max: 120 }, active: { type: "bool" } }, input, { partial: true });
+        Object.assign(target, data);
+        if (!self) logActivity(user.id, `{actor} updated ${target.name}'s details`);
+        return [200, { ok: true }];
+      }
+    }
     if (parts[0] === "users") {
       if (method === "GET") return [200, sortBy(db.users, (a, b) => b.active - a.active, (a, b) => cmp(a.name, b.name)).map((u) => ({ id: u.id, name: u.name, email: u.email, role: u.role, job_title: u.job_title, active: u.active, created_at: u.created_at }))];
       if (!atLeast(user, "admin")) throw new HttpError(403, "Only an admin can manage the team.");
@@ -887,7 +1218,16 @@
         if (!DOC_TYPES[ext]) throw new HttpError(422, "Upload a PDF, image, Word, Excel, PowerPoint, CSV or text file.");
         const meta = validate({ title: { type: "text", required: true, max: 200 }, folder: { type: "text", max: 60 } }, { title: decodeURIComponent(String(headers["x-title"] || "")), folder: decodeURIComponent(String(headers["x-folder"] || "")) || "General" });
         if (!(rawBody instanceof Blob) || !rawBody.size) throw new HttpError(422, "The file is empty.");
-        if (rawBody.size > MAX_UPLOAD) throw new HttpError(413, "In this online preview, files can be up to 2 MB. The real workspace takes up to 20 MB.");
+        if (rawBody.size > MAX_UPLOAD) throw new HttpError(413, HOSTED ? "Files can be up to 5 MB here." : "In this online preview, files can be up to 2 MB. The real workspace takes up to 20 MB.");
+        if (HOSTED) {
+          const isPrivate = headers["x-private"] === "1";
+          if (isPrivate && !atLeast(user, "manager")) throw new HttpError(403, "Only managers can upload private files here.");
+          const pending = { title: meta.title, folder: meta.folder || "General", file_name: fileName, mime_type: DOC_TYPES[ext], size: rawBody.size, storage_key: `f${cloudId()}`, private: isPrivate ? 1 : 0, uploaded_by: user.id };
+          pending.parts = await storeFile(pending, rawBody);
+          const doc = insert("documents", pending);
+          logActivity(user.id, `${user.name} uploaded “${doc.title}”`, doc.private ? "manager" : "all");
+          return [201, { id: doc.id }];
+        }
         const key = `${Date.now()}-${Math.random().toString(16).slice(2, 10)}${ext}`;
         const data = await readFileBody(rawBody);
         files[key] = { kind: typeof data === "string" && data.startsWith("data:") ? "dataurl" : "text", data };
@@ -901,6 +1241,7 @@
         if (!(doc.uploaded_by === user.id || atLeast(user, "manager"))) throw new HttpError(403, "Only the uploader or a manager can delete this.");
         db.documents = db.documents.filter((d) => d.id !== doc.id);
         delete files[doc.storage_key];
+        if (HOSTED) for (let i = 0; i < (doc.parts || 0); i++) queued(() => cloud.db.doc(filePath(doc, i)).delete()).catch(() => {});
         logActivity(user.id, `${user.name} deleted “${doc.title}”`, doc.private ? "manager" : "all");
         return [200, { ok: true }];
       }
@@ -957,8 +1298,18 @@
     for (const [k, v] of Object.entries(init.headers || {})) headers[k.toLowerCase()] = v;
     let status = 200;
     let payload;
+    const method = (init.method || "GET").toUpperCase();
     try {
-      [status, payload] = await api((init.method || "GET").toUpperCase(), new URL(href, "https://preview.local"), headers, init.body);
+      if (HOSTED) {
+        await cloud.ready;
+        await resolveNames();
+        cloud.busy++;
+      }
+      try {
+        [status, payload] = await api(method, new URL(href, "https://preview.local"), headers, init.body);
+      } finally {
+        if (HOSTED) cloud.busy--;
+      }
     } catch (error) {
       if (error instanceof HttpError) {
         status = error.status;
@@ -969,9 +1320,14 @@
         payload = { error: "Something went wrong. Please try again." };
       }
     }
-    persist();
-    renderBar();
-    await new Promise((r) => setTimeout(r, 40)); // a touch of latency so loading states behave as they do on a real network
+    if (HOSTED) {
+      if (method !== "GET") cloudSync();
+      flushPending();
+    } else {
+      persist();
+      renderBar();
+      await new Promise((r) => setTimeout(r, 40)); // a touch of latency so loading states behave as they do on a real network
+    }
     return new Response(JSON.stringify(payload), { status, headers: { "Content-Type": "application/json" } });
   };
 
@@ -1050,17 +1406,69 @@
     );
     overlay("Backup", body);
   }
+  async function cloudOpenDocument(id, inline) {
+    const user = currentUser();
+    const doc = user && byId("documents", id);
+    if (!doc || !canSeeDoc(user, doc)) return;
+    let url;
+    try {
+      url = await readFile(doc);
+    } catch {
+      return notice("That file couldn't be opened. Try again in a moment.");
+    }
+    const blob = dataUrlToBlob(url, doc.mime_type);
+    if (inline && (/^image\//.test(doc.mime_type) || /^text\//.test(doc.mime_type))) {
+      const body = document.createElement("div");
+      body.className = "pv-body";
+      if (/^image\//.test(doc.mime_type)) {
+        const img = document.createElement("img");
+        img.src = url;
+        img.alt = doc.title;
+        img.className = "pv-img";
+        body.append(img);
+      } else {
+        const pre = document.createElement("pre");
+        pre.className = "pv-pre";
+        pre.textContent = await blob.text();
+        body.append(pre);
+      }
+      const save = document.createElement("button");
+      save.type = "button";
+      save.className = "pv-close";
+      save.textContent = `Save ${doc.file_name}`;
+      save.addEventListener("click", () => saveFile(doc.file_name, blob));
+      body.append(save);
+      return overlay(doc.title, body);
+    }
+    await saveFile(doc.file_name, blob);
+  }
+  async function cloudBackup() {
+    const user = currentUser();
+    if (!user || !atLeast(user, "admin")) return;
+    const snapshot = { exported_at: nowIso(), company: getSetting("company_name", "Integral Academy"), settings: { ...db.settings }, budgets: db.budgets };
+    for (const t of TABLES) snapshot[t] = db[t].map((r) => JSON.parse(serialize(t, r)));
+    setSetting("last_backup_at", nowIso());
+    logActivity(user.id, "{actor} downloaded a backup", "manager");
+    cloudSync();
+    await saveFile(`workspace-backup-${localToday()}.json`, JSON.stringify(snapshot, null, 1));
+  }
   document.addEventListener("click", (e) => {
     const a = e.target.closest && e.target.closest("a[href^='/api/']");
     if (!a) return;
     e.preventDefault();
     const href = a.getAttribute("href");
     const m = href.match(/^\/api\/documents\/(\d+)\/file/);
+    if (HOSTED) {
+      if (m) cloudOpenDocument(Number(m[1]), href.includes("inline=1"));
+      else if (href.startsWith("/api/backup")) cloudBackup();
+      return;
+    }
     if (m) showDocument(Number(m[1]));
     else if (href.startsWith("/api/backup")) backupNotice();
   }, true);
 
   window.addEventListener("ws:preview-file", (e) => {
+    if (HOSTED) return void saveFile(e.detail.name, e.detail.text);
     const body = document.createElement("div");
     body.className = "pv-body";
     body.append(para(`In the workspace on your computer, this saves ${e.detail.name}. Online previews can't save files, so here is what it contains:`));
@@ -1152,9 +1560,14 @@
     renderBar();
   }
 
-  if (!load()) seed();
-  else checkRenewals();
-  persist();
-  if (document.body) mountBar();
-  else document.addEventListener("DOMContentLoaded", mountBar);
+  if (HOSTED) {
+    db = emptyDb();
+    cloud.ready = startCloud();
+  } else {
+    if (!load()) seed();
+    else checkRenewals();
+    persist();
+    if (document.body) mountBar();
+    else document.addEventListener("DOMContentLoaded", mountBar);
+  }
 })();

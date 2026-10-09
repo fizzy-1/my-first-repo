@@ -117,6 +117,19 @@ The calculations for goals, renewals, budgets, the forecast and stats live in `p
 
 **School income in the forecast** comes from the contracts, so record school payments under the category "School contracts". That way they aren't counted twice.
 
+## Hosted on claude.ai (no computer needed)
+
+`preview/hosted.html` is the same app running as a claude.ai artifact, with the team's real data in the artifact's shared database:
+
+- **Signing in:** people use their claude.ai accounts; there are no passwords. Anyone the page is shared with joins automatically when they open it.
+- **Roles come from the Share menu:** the Owner is the admin, an **Editor** is a manager, and a **Contributor** (where your plan offers it) is a member. Viewers can't use the workspace.
+- **Finance is protected by claude.ai itself:** transactions, budgets, the opening balance, private files and money-related activity live under `money/` in the database, which only Editors and the Owner can read or write.
+- **Live:** changes from other people appear without reloading. Exports, document files and backups are saved through claude.ai's download prompt.
+- **Limits:** files up to 5 MB each, and 25 000 database records in total (years of use for a small team). The backup is a `.json` file of every record; uploaded files aren't inside it.
+- **Privacy:** spending requests and notifications are stored where every member can technically read them, although the app only shows people their own. Don't put anything secret in them.
+
+To publish it, run `node preview/build.mjs`. Then publish `hosted.html` with `hosted.js`, `mock-api.js`, `icons.js`, `metrics.js`, `ui.js`, `app.js` and `crest.png`, declaring the `db` capability (rules: root `read/write: interact`, `money` `read/write: admin`), `user` (scope `profile`) and `downloads`.
+
 ## How it's built
 
 - `server.js`: the HTTP server and the whole API, including validation and permission rules.

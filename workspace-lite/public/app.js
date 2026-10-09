@@ -43,6 +43,13 @@
         live = false;
       };
     }, [path, n]);
+    // Hosted on claude.ai, other people's changes arrive live: refetch quietly when they do.
+    useEffect(() => {
+      if (!path) return undefined;
+      const onRemote = () => setN((x) => x + 1);
+      window.addEventListener("ws:remote", onRemote);
+      return () => window.removeEventListener("ws:remote", onRemote);
+    }, [path]);
     const reload = useCallback(() => setN((x) => x + 1), []);
     return { ...state, reload };
   }
@@ -1749,6 +1756,8 @@
   // ─────────────────────────── Documents ───────────────────────────
   const ACCEPT = ".pdf,.png,.jpg,.jpeg,.txt,.csv,.docx,.xlsx,.pptx";
   function UploadModal({ open, onClose, onDone, folders }) {
+    const { user } = useApp();
+    const canPrivate = atLeast(user, "manager");
     const [file, setFile] = useState(null);
     const [title, setTitle] = useState("");
     const [folder, setFolder] = useState("General");
@@ -1778,13 +1787,13 @@
         setBusy(false);
       }
     };
-    return html`<${Modal} open=${open} onClose=${onClose} title="Upload a document" description="PDF, images, Word, Excel, PowerPoint, CSV or text — up to 20 MB."
+    return html`<${Modal} open=${open} onClose=${onClose} title="Upload a document" description=${`PDF, images, Word, Excel, PowerPoint, CSV or text — up to ${window.WS_HOSTED ? 5 : 20} MB.`}
       footer=${html`<${Button} onClick=${onClose}>Cancel<//><${Button} variant="primary" icon="upload" disabled=${busy} onClick=${upload}>${busy ? "Uploading…" : "Upload"}<//>`}>
       <${Field} id="doc-file" label="File"><input id="doc-file" type="file" accept=${ACCEPT} onChange=${(e) => { const f = e.target.files[0] || null; setFile(f); if (f && !title) setTitle(f.name.replace(/\.[^.]+$/, "")); }} /><//>
       <${Field} id="doc-title" label="Title"><${TextInput} id="doc-title" value=${title} onChange=${setTitle} /><//>
       <${Field} id="doc-folder" label="Folder" hint="Type a new name to create a folder."><${TextInput} id="doc-folder" value=${folder} onChange=${setFolder} list="doc-folders" /><//>
       <datalist id="doc-folders">${folders.map((f) => html`<option key=${f} value=${f} />`)}</datalist>
-      <label style=${{ display: "flex", gap: 8, alignItems: "center", fontSize: 13.5 }}><input type="checkbox" checked=${priv} onChange=${(e) => setPriv(e.target.checked)} />Private — only me and managers can see it</label>
+      ${(!window.WS_HOSTED || canPrivate) && html`<label style=${{ display: "flex", gap: 8, alignItems: "center", fontSize: 13.5 }}><input type="checkbox" checked=${priv} onChange=${(e) => setPriv(e.target.checked)} />${window.WS_HOSTED ? "Private — only managers can see it" : "Private — only me and managers can see it"}</label>`}
       ${error && html`<div role="alert" style=${{ padding: "8px 12px", borderRadius: 8, background: "var(--danger-soft)", color: "var(--danger)", fontSize: 13 }}>${error}</div>`}
     <//>`;
   }
@@ -1823,7 +1832,11 @@
     const settings = useResource(admin ? "/api/settings" : null);
     const [editing, setEditing] = useState(null);
     const item = editing && editing !== "new" ? editing : null;
-    const fields = [
+    const hosted = Boolean(window.WS_HOSTED);
+    const fields = hosted ? [
+      { name: "job_title", label: "Job title", type: "text", full: true },
+      ...(item && item.id !== user.id ? [{ name: "active", label: "Active", type: "checkbox", hint: "Inactive people can't use the workspace. To remove someone for good, also take them off the page's Share menu." }] : []),
+    ] : [
       { name: "name", label: "Full name", type: "text", required: true },
       { name: "email", label: "Email (used to sign in)", type: "email", required: true },
       { name: "job_title", label: "Job title", type: "text" },
@@ -1832,20 +1845,26 @@
       ...(item ? [{ name: "active", label: "Active", type: "checkbox", hint: "Inactive people can't sign in" }] : []),
     ];
     return html`<${Fragment}>
-      <${PageHeader} title="Team" description="Who's on the team and what they can do." actions=${admin && html`<${Button} variant="primary" icon="user-plus" onClick=${() => setEditing("new")}>Add person<//>`} />
+      <${PageHeader} title="Team" description="Who's on the team and what they can do." actions=${admin && !hosted && html`<${Button} variant="primary" icon="user-plus" onClick=${() => setEditing("new")}>Add person<//>`} />
       <div style=${{ display: "grid", gap: 16 }}>
+        ${hosted && html`<${Card} style=${{ padding: "14px 18px", fontSize: 13.5, display: "grid", gap: 6 }}>
+          <strong>Adding people and roles</strong>
+          <span>People join by opening this page. To invite someone, use the <strong>Share</strong> menu at the top of the page in claude.ai.</span>
+          <span style=${{ color: "var(--muted-fg)" }}>Their role follows the level you share with: <strong>Owner</strong> is the admin, <strong>Editor</strong> makes someone a manager (sees finance, approves spending), and <strong>Contributor</strong>, where your plan offers it, makes them a member. Viewers can't use the workspace. claude.ai enforces this, so finance stays locked to Editors and the Owner.</span>
+        <//>`}
         <${Card}><${Table} rows=${users} onRowClick=${admin ? (u) => setEditing(u) : undefined}
           columns=${[
             { key: "name", header: "Name", sort: (u) => u.name, render: (u) => html`<${UserChip} name=${u.name} subtitle=${u.job_title} />` },
-            { key: "email", header: "Email", hideOnMobile: true, render: (u) => html`<a href=${`mailto:${u.email}`} onClick=${(e) => e.stopPropagation()}>${u.email}</a>` },
+            ...(hosted ? [] : [{ key: "email", header: "Email", hideOnMobile: true, render: (u) => html`<a href=${`mailto:${u.email}`} onClick=${(e) => e.stopPropagation()}>${u.email}</a>` }]),
             { key: "role", header: "Role", sort: (u) => RANK[u.role], render: (u) => html`<${StatusBadge} meta=${META.role} value=${u.role} />` },
             { key: "status", header: "Status", hideOnMobile: true, render: (u) => (u.active ? html`<${Badge} tone="success" dot>Active<//>` : html`<${Badge} dot>Inactive<//>`) },
           ]} /><//>
         ${admin && html`<${Loaded} res=${settings}>${(s) => html`<${SettingsCard} initial=${s} onSaved=${(v) => { setCompany(v.company_name); settings.reload(); toast("Settings saved"); }} />`}<//>`}
         ${admin && html`<${Section} title="Backups" description=${settings.data && settings.data.last_backup_at ? `Last downloaded ${fmt.relative(settings.data.last_backup_at)}.` : "No backup downloaded yet."}
           actions=${html`<a href="/api/backup" download onClick=${() => setTimeout(settings.reload, 1500)} style=${{ display: "inline-flex", alignItems: "center", gap: 8, height: 36, padding: "0 14px", borderRadius: 8, background: "var(--primary)", color: "var(--primary-fg)", textDecoration: "none", fontSize: 13.5, fontWeight: 500 }}><${Icon} name="download" />Download backup</a>`}>
-          <p style=${{ margin: 0, fontSize: 13.5 }}>The backup is a .zip of everything: the database and all uploaded files. Keep copies somewhere safe (cloud storage or a USB drive), at least once a week.</p>
-          <p style=${{ margin: "8px 0 0", fontSize: 13, color: "var(--muted-fg)" }}>To restore: stop the workspace, unzip the backup inside the workspace folder (replacing the <code>data</code> folder), and start it again.</p>
+          ${hosted ? html`<p style=${{ margin: 0, fontSize: 13.5 }}>The backup is a .json file with every record in the workspace. Uploaded files aren't inside it, so keep your own copies of important documents. Save a backup at least once a week.</p>`
+          : html`<p style=${{ margin: 0, fontSize: 13.5 }}>The backup is a .zip of everything: the database and all uploaded files. Keep copies somewhere safe (cloud storage or a USB drive), at least once a week.</p>
+          <p style=${{ margin: "8px 0 0", fontSize: 13, color: "var(--muted-fg)" }}>To restore: stop the workspace, unzip the backup inside the workspace folder (replacing the <code>data</code> folder), and start it again.</p>`}
         <//>`}
       </div>
       <${FormModal} open=${Boolean(editing)} onClose=${() => setEditing(null)} title=${item ? `Edit ${item.name}` : "Add a person"} fields=${fields} initial=${item ? { ...item, active: Boolean(item.active) } : null} submitLabel=${item ? "Save" : "Add person"}
@@ -1897,13 +1916,42 @@
             <${Avatar} name=${user.name} size=${48} />
             <div><strong style=${{ fontSize: 16 }}>${user.name}</strong><br /><${Muted}>${user.email}<//><div style=${{ marginTop: 6 }}><${StatusBadge} meta=${META.role} value=${user.role} /></div></div>
           </div>
-          <p style=${{ margin: "14px 0 0", fontSize: 13, color: "var(--muted-fg)" }}>Ask an admin to change your name, email or role.</p>
+          ${window.WS_HOSTED ? html`<p style=${{ margin: "14px 0 0", fontSize: 13, color: "var(--muted-fg)" }}>You're signed in with your claude.ai account. Your role follows how this page is shared with you.</p>`
+            : html`<p style=${{ margin: "14px 0 0", fontSize: 13, color: "var(--muted-fg)" }}>Ask an admin to change your name, email or role.</p>`}
         <//>
+        ${window.WS_HOSTED && html`<${DisplayNameCard} />`}
         <${Section} title="Appearance">
           <${Field} id="theme" label="Theme"><${Select} id="theme" value=${theme} onChange=${(t) => { setTheme(t); applyTheme(t); }} options=${[{ value: "system", label: "Match my device" }, { value: "light", label: "Light" }, { value: "dark", label: "Dark" }]} style=${{ width: "100%" }} /><//>
         <//>
-        <${PasswordCard} key=${formKey} onDone=${() => { toast("Password changed. Other devices were signed out."); setFormKey((k) => k + 1); }} />
+        ${!window.WS_HOSTED && html`<${PasswordCard} key=${formKey} onDone=${() => { toast("Password changed. Other devices were signed out."); setFormKey((k) => k + 1); }} />`}
       <//>
+    <//>`;
+  }
+  /** Hosted only: the name the team sees, when the claude.ai name isn't the one you want shown. */
+  function DisplayNameCard() {
+    const { user, users, reloadUsers, toast } = useApp();
+    const mine = users.find((u) => u.id === user.id) || {};
+    const [name, setName] = useState(mine.display_name || "");
+    const [busy, setBusy] = useState(false);
+    const save = async (e) => {
+      e.preventDefault();
+      setBusy(true);
+      try {
+        await api("PATCH", `/api/users/${user.id}`, { display_name: name });
+        toast(name ? "Name saved" : "Using your claude.ai name");
+        reloadUsers();
+        window.dispatchEvent(new Event("ws:refresh"));
+      } catch (err) {
+        toast(err.message, "danger");
+      } finally {
+        setBusy(false);
+      }
+    };
+    return html`<${Section} title="Your name in the workspace">
+      <form onSubmit=${save} style=${{ display: "grid", gap: 12 }}>
+        <${Field} id="display-name" label="Name" hint="Leave empty to use your claude.ai name."><${TextInput} id="display-name" value=${name} onChange=${setName} placeholder=${user.name} /><//>
+        <div><${Button} type="submit" variant="primary" disabled=${busy}>${busy ? "Saving…" : "Save name"}<//></div>
+      </form>
     <//>`;
   }
   function PasswordCard({ onDone }) {
@@ -2227,10 +2275,12 @@
       load();
       const every = setInterval(load, 60000);
       window.addEventListener("ws:changed", soon);
+      window.addEventListener("ws:remote", soon);
       return () => {
         clearInterval(every);
         clearTimeout(timer);
         window.removeEventListener("ws:changed", soon);
+        window.removeEventListener("ws:remote", soon);
       };
     }, [route.path]);
     useEffect(() => {
@@ -2283,7 +2333,7 @@
             <${Avatar} name=${user.name} size=${30} />
             <span style=${{ minWidth: 0 }}><span style=${{ display: "block", color: "var(--sidebar-heading)", fontSize: 13, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>${user.name}</span><span style=${{ fontSize: 11.5, color: "var(--sidebar-muted)" }}>${META.role[user.role].label}</span></span>
           </a>
-          <button title="Sign out" aria-label="Sign out" onClick=${onSignOut} style=${{ background: "none", border: 0, color: "var(--sidebar-muted)", cursor: "pointer", display: "grid", placeItems: "center", width: 32, height: 32, borderRadius: 8 }}><${Icon} name="log-out" /></button>
+          ${!window.WS_HOSTED && html`<button title="Sign out" aria-label="Sign out" onClick=${onSignOut} style=${{ background: "none", border: 0, color: "var(--sidebar-muted)", cursor: "pointer", display: "grid", placeItems: "center", width: 32, height: 32, borderRadius: 8 }}><${Icon} name="log-out" /></button>`}
         </div>
       </aside>
       <div class="main">
@@ -2328,14 +2378,20 @@
       const out = () => setStatus((s) => (s && s.user ? { ...s, user: null } : s));
       window.addEventListener("ws:signed-out", out);
       window.addEventListener("ws:refresh", loadStatus); // lets the online preview switch accounts
+      const onNotice = (e) => toast(e.detail.message, "danger");
+      window.addEventListener("ws:notice", onNotice);
       return () => {
         window.removeEventListener("ws:signed-out", out);
         window.removeEventListener("ws:refresh", loadStatus);
+        window.removeEventListener("ws:notice", onNotice);
       };
-    }, [loadStatus]);
+    }, [loadStatus, toast]);
     const readyKey = status && status.user && !status.user.must_change_password ? status.user.id : null;
     useEffect(() => {
-      if (readyKey) reloadUsers();
+      if (!readyKey) return undefined;
+      reloadUsers();
+      window.addEventListener("ws:remote", reloadUsers); // hosted: people joining or renaming themselves
+      return () => window.removeEventListener("ws:remote", reloadUsers);
     }, [readyKey, reloadUsers]);
     const ctx = useMemo(() => {
       if (!status || !status.user) return null;
@@ -2359,6 +2415,7 @@
     if (!status) body = html`<div id="boot">Loading…</div>`;
     else if (status.error) body = html`<div id="boot"><div>Can't reach the workspace server.<br />${status.error}<br /><br /><${Button} onClick=${loadStatus}>Try again<//></div></div>`;
     else if (status.setupRequired) body = html`<${SetupScreen} onDone=${loadStatus} />`;
+    else if (!status.user && status.hosted) body = html`<${AuthFrame} company=${status.company} title="Integral Workspace" subtitle=${status.hosted.message || "Loading the workspace…"}><${Button} variant="primary" onClick=${() => window.location.reload()}>Try again<//><//>`;
     else if (!status.user) body = html`<${LoginScreen} company=${status.company} onSignedIn=${loadStatus} />`;
     else if (status.user.must_change_password) body = html`<${NewPasswordScreen} company=${status.company} user=${status.user} onDone=${loadStatus} onSignOut=${signOut} />`;
     else body = html`<${AppContext.Provider} value=${ctx}><${Shell} key=${status.user.id} onSignOut=${signOut} /><//>`;

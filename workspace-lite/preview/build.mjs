@@ -1,4 +1,4 @@
-// Builds preview/index.html (the online preview page) from public/index.html.
+// Builds preview/index.html (the demo) and preview/hosted.html (the hosted workspace) from public/index.html.
 // Publish it with these files next to it: icons.js, metrics.js, ui.js, app.js and crest.png from public/, plus preview/mock-api.js and preview/demo-data.js.
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -39,7 +39,7 @@ const previewCss = `
 .pv-img { max-width: 100%; border-radius: 10px; }
 `;
 
-const page = `<title>Integral Workspace</title>
+const head = (title) => `<title>${title}</title>
 <link rel="icon" href="crest.png" />
 <style>${style}${previewCss}</style>
 ${boot}
@@ -48,10 +48,19 @@ ${boot}
 <script src="https://cdn.jsdelivr.net/npm/htm@3.1.1/dist/htm.umd.js"></script>
 <script src="icons.js"></script>
 <script src="metrics.js"></script>
-<script src="demo-data.js"></script>
+`;
+// The demo: sample data kept in each viewer's browser.
+const page = `${head("Integral Workspace Demo")}<script src="demo-data.js"></script>
+<script src="ui.js"></script>
+<script src="mock-api.js"></script>
+<script src="app.js"></script>
+`;
+// The hosted workspace: the team's real data in the artifact's shared database (publish with db, user and downloads).
+const hosted = `${head("Integral Workspace")}<script src="hosted.js"></script>
 <script src="ui.js"></script>
 <script src="mock-api.js"></script>
 <script src="app.js"></script>
 `;
 writeFileSync(path.join(here, "index.html"), page);
-console.log("Wrote preview/index.html");
+writeFileSync(path.join(here, "hosted.html"), hosted);
+console.log("Wrote preview/index.html and preview/hosted.html");
