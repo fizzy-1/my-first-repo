@@ -37,7 +37,7 @@ Also: **notifications** (the bell) tell people when they're assigned a task, whe
 
 ## Run it
 
-1. Install **Node.js 22.5 or newer** (the LTS version is fine) from <https://nodejs.org>.
+1. Install **Node.js** from <https://nodejs.org>. Choose the LTS version: it needs 22.13 or newer, and the current LTS is newer than that.
 2. Start the workspace:
    - **Windows**: double-click **`Start Workspace.bat`**.
    - **Mac**: double-click **`Start Workspace.command`**. The first time, macOS may block it. If so, right-click the file, choose **Open**, then confirm.
@@ -58,11 +58,18 @@ Sign in as `sipho@integralacademy.co.za` (admin), `ayesha@integralacademy.co.za`
 
 When you're ready to use it for real, stop the server, delete the `data` folder and start again.
 
+### Start it automatically when the computer turns on
+
+- **Windows**: press <kbd>Win</kbd>+<kbd>R</kbd>, type `shell:startup` and press Enter. Then right-click inside that folder, choose **New → Shortcut**, and point it at `Start Workspace.bat`.
+- **Mac**: open System Settings → General → Login Items, click **+** under "Open at Login", and choose `Start Workspace.command`.
+
+Also stop the computer from going to sleep during working hours, or the workspace goes offline with it.
+
 ## Using it from other computers
 
 The server listens on your whole local network, and the start window prints the address to share, for example `http://192.168.1.20:3000`. Teammates open that address in their browser.
 
-If you need to find the address yourself: on Windows run `ipconfig` and look for the IPv4 address; on a Mac open System Settings → Network. If they can't connect, allow Node.js through that computer's firewall. Keep the computer on (and awake) during working hours.
+If you need to find the address yourself: on Windows run `ipconfig` and look for the IPv4 address; on a Mac open System Settings → Network. The first time it starts, Windows asks whether to let Node.js use the network. Tick **Private networks** and click **Allow**. If teammates still can't connect, check the firewall on that computer and make sure everyone is on the same Wi-Fi or office network. Keep the computer on (and awake) during working hours.
 
 **Keep it on your private network.** Don't expose port 3000 to the internet directly. If the team needs remote access, use a private network tool such as Tailscale, or put it behind an HTTPS reverse proxy and start it with `COOKIE_SECURE=true`.
 

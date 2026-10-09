@@ -7,7 +7,7 @@ if errorlevel 1 (
   pause
   exit /b 1
 )
-node -e "const [a,b]=process.versions.node.split('.').map(Number);process.exit(a>22||(a===22&&b>=5)?0:1)"
+node -e "const [a,b]=process.versions.node.split('.').map(Number);process.exit(a>22||(a===22&&b>=13)?0:1)"
 if errorlevel 1 (
   echo Your Node.js is too old. Install the LTS version from https://nodejs.org and then run this again.
   pause

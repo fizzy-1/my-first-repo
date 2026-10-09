@@ -2,10 +2,10 @@
   "name": "integral-workspace-lite",
   "version": "1.0.0",
   "private": true,
-  "description": "A small self-hosted team workspace for Integral Academy. No dependencies: needs only Node.js 22.5 or newer.",
+  "description": "A small self-hosted team workspace for Integral Academy. No dependencies: needs only Node.js 22.13 or newer.",
   "type": "module",
   "engines": {
-    "node": ">=22.5"
+    "node": ">=22.13"
   },
   "scripts": {
     "start": "node --disable-warning=ExperimentalWarning server.js",
