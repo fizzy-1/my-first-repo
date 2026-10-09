@@ -129,6 +129,15 @@ CREATE TABLE IF NOT EXISTS activity (
   audience TEXT NOT NULL DEFAULT 'all' CHECK (audience IN ('all','manager')),
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE TABLE IF NOT EXISTS notifications (
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  message TEXT NOT NULL,
+  link TEXT,
+  read_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS notifications_user ON notifications(user_id, read_at);
 CREATE INDEX IF NOT EXISTS tasks_assignee ON tasks(assignee_id, status);
 CREATE INDEX IF NOT EXISTS leads_stage ON leads(stage);
 CREATE INDEX IF NOT EXISTS tx_date ON transactions(date);
@@ -145,6 +154,9 @@ function ensureColumn(table, column, definition) {
 }
 ensureColumn("users", "must_change_password", "INTEGER NOT NULL DEFAULT 0");
 ensureColumn("activity", "audience", "TEXT NOT NULL DEFAULT 'all'");
+ensureColumn("tasks", "recurrence", "TEXT NOT NULL DEFAULT 'none' CHECK (recurrence IN ('none','weekly','monthly'))");
+ensureColumn("leads", "won_at", "TEXT");
+ensureColumn("content", "published_at", "TEXT");
 
 /** Records a line in the team activity feed. "manager" entries (money, private files) are hidden from members. */
 export function logActivity(userId, summary, audience = "all") {

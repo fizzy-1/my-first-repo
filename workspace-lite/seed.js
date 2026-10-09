@@ -78,7 +78,7 @@ const leads = [
   ["Rustenburg Secondary", "Mr J. Kekana", "Rustenburg", "proposal", 39000, 130, day(1), sipho],
 ];
 const leadIds = leads.map(([school, contact_name, city, stage, value, learners, next_follow_up, owner_id]) =>
-  insert("leads", { school, contact_name, contact_email: contact_name ? `principal@${school.toLowerCase().replace(/[^a-z]+/g, "").slice(0, 16)}.school.za` : null, city, stage, value, learners, next_follow_up, owner_id }),
+  insert("leads", { school, contact_name, contact_email: contact_name ? `principal@${school.toLowerCase().replace(/[^a-z]+/g, "").slice(0, 16)}.school.za` : null, city, stage, value, learners, next_follow_up, owner_id, won_at: stage === "won" ? `${school.startsWith("Thuto") ? monthDay(2, 14) : day(-6)}T09:00:00.000Z` : null }),
 );
 insert("lead_notes", { lead_id: leadIds[2], body: "Visited the school. HOD loved the past-paper walkthroughs; asked for a quote for 180 learners.", author_id: kagiso });
 insert("lead_notes", { lead_id: leadIds[2], body: "Proposal sent: R54 000 per year including teacher dashboard access.", author_id: kagiso });
@@ -96,7 +96,7 @@ const content = [
   ["Analytical geometry: circles", "video", "Analytical geometry", "idea", johan, day(21)],
   ["Financial maths in 15 minutes", "video", "Finance", "editing", nomvula, day(-2)],
 ];
-for (const [title, type, topic, stage, owner_id, due_date] of content) insert("content", { title, type, topic, stage, owner_id, due_date });
+for (const [title, type, topic, stage, owner_id, due_date] of content) insert("content", { title, type, topic, stage, owner_id, due_date, published_at: stage === "published" ? `${due_date}T12:00:00.000Z` : null });
 
 // ── Meetings with decisions and action items ──
 const weekly = insert("meetings", {
@@ -117,7 +117,8 @@ const tasks = [
   ["Prepare Rustenburg proposal", kagiso, day(1), "high", "doing", { lead_id: leadIds[9], meeting_id: weekly }],
   ["Record 2024 Paper 1 memo intro", nomvula, day(-1), "medium", "todo", { meeting_id: weekly }],
   ["Write grant impact report", ayesha, day(9), "high", "doing", { meeting_id: board }],
-  ["Reconcile September bank statement", ayesha, day(-2), "medium", "todo", {}],
+  ["Reconcile last month's bank statement", ayesha, day(-2), "medium", "todo", { recurrence: "monthly" }],
+  ["Post weekly exam tips on social media", johan, day(1), "medium", "todo", { recurrence: "weekly" }],
   ["Review trig worksheet draft", johan, day(3), "medium", "todo", {}],
   ["Update pricing sheet for 2027", sipho, day(12), "low", "todo", {}],
   ["Call Tembisa High about SGB decision", kagiso, day(-1), "medium", "todo", { lead_id: leadIds[4] }],
@@ -142,6 +143,17 @@ const doc = (title, folder, fileName, mime, body, uploaded_by, isPrivate = 0) =>
 doc("Team handbook", "Policies", "team-handbook.txt", "text/plain", "Integral Academy team handbook\n\n1. We put learners first.\n2. Spending over R1 000 needs approval in the workspace.\n3. Meeting decisions and action items go in Meetings.\n", sipho);
 doc("2027 school pricing", "Sales", "school-pricing-2027.csv", "text/csv", "Learners,Price per year (R)\nUp to 100,24000\n101-200,42000\n201+,54000\n", sipho);
 doc("Grant agreement summary", "Finance", "grant-agreement-summary.txt", "text/plain", "Innovation grant: R300 000 in two tranches. Second tranche on approval of the impact report.\n", ayesha, 1);
+
+const note = (user_id, message, link, read = false) => insert("notifications", { user_id, message, link, read_at: read ? new Date().toISOString() : null });
+for (const manager of [sipho, ayesha, johan]) {
+  note(manager, "Nomvula Khumalo asked for approval: “Ring light and backdrop for recordings” (R3 800)", "approvals");
+  note(manager, "Kagiso Mokoena asked for approval: “Travel to Polokwane for school visits” (R5 200)", "approvals");
+}
+note(sipho, "Kagiso Mokoena added a note on Mamelodi Science Academy", `pipeline?lead=${leadIds[2]}`, true);
+note(nomvula, "Sipho Dlamini assigned you “Record 2024 Paper 1 memo intro”", "tasks");
+note(kagiso, "Sipho Dlamini assigned you “Send Mamelodi proposal follow-up”", "tasks");
+note(kagiso, "Sipho Dlamini rejected your request “Billboard near Bree taxi rank”: “Too expensive for now.”", "approvals", true);
+note(johan, "Ayesha Patel approved your request “Canva Pro for the team”", "approvals", true);
 
 logActivity(sipho, "Sipho Dlamini set up the workspace");
 logActivity(kagiso, "Kagiso Mokoena added a note on Mamelodi Science Academy");

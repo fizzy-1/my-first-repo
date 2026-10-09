@@ -44,8 +44,8 @@ async function readBody(req, limit = 1024 * 1024) {
   }
   return Buffer.concat(chunks);
 }
-async function readJson(req) {
-  const raw = await readBody(req);
+async function readJson(req, limit) {
+  const raw = await readBody(req, limit);
   if (!raw.length) return {};
   try {
     return JSON.parse(raw.toString("utf8"));
@@ -175,10 +175,17 @@ const RESOURCES = {
       assignee_id: { type: "user" },
       meeting_id: { type: "int" },
       lead_id: { type: "int" },
+      recurrence: { type: "enum", values: ["none", "weekly", "monthly"] },
     },
     list: () => all("SELECT * FROM tasks ORDER BY CASE status WHEN 'done' THEN 1 ELSE 0 END, due_date IS NULL, due_date, id DESC"),
     beforeCreate: (data, user) => ({ ...data, created_by: user.id, assignee_id: data.assignee_id ?? user.id }),
     beforeUpdate: (data, row) => ("status" in data ? { ...data, completed_at: data.status === "done" ? row.completed_at || new Date().toISOString() : null } : data),
+    afterCreate: (row, user) => notify(row.assignee_id, user, `${user.name} assigned you “${row.title}”`, `tasks?task=${row.id}`),
+    afterUpdate: (row, before, user) => {
+      if (row.assignee_id !== before.assignee_id) notify(row.assignee_id, user, `${user.name} assigned you “${row.title}”`, `tasks?task=${row.id}`);
+      if (row.status === "done" && before.status !== "done" && row.recurrence !== "none") return { next_task_due: scheduleNext(row) };
+      return null;
+    },
     canEdit: (user, row) => atLeast(user, "manager") || row.created_by === user.id || row.assignee_id === user.id,
     canDelete: (user, row) => atLeast(user, "manager") || row.created_by === user.id,
   },
@@ -197,7 +204,8 @@ const RESOURCES = {
       owner_id: { type: "user" },
     },
     list: () => all("SELECT * FROM leads ORDER BY school"),
-    beforeCreate: (data, user) => ({ ...data, owner_id: data.owner_id ?? user.id }),
+    beforeCreate: (data, user) => ({ ...data, owner_id: data.owner_id ?? user.id, won_at: data.stage === "won" ? new Date().toISOString() : null }),
+    beforeUpdate: (data, row) => ("stage" in data ? { ...data, won_at: data.stage === "won" ? row.won_at || new Date().toISOString() : null } : data),
     canEdit: () => true,
     canDelete: (user) => atLeast(user, "manager"),
   },
@@ -212,11 +220,18 @@ const RESOURCES = {
       due_date: { type: "date" },
     },
     list: () => all("SELECT * FROM content ORDER BY due_date IS NULL, due_date, id DESC"),
-    beforeCreate: (data, user) => ({ ...data, owner_id: data.owner_id ?? user.id }),
+    beforeCreate: (data, user) => {
+      if (data.stage === "published" && !atLeast(user, "manager")) throw new HttpError(403, "Only a manager can mark content as published.");
+      return { ...data, owner_id: data.owner_id ?? user.id, published_at: data.stage === "published" ? new Date().toISOString() : null };
+    },
     // Only managers publish: members can move their work up to Review.
     beforeUpdate: (data, row, user) => {
       if (data.stage === "published" && !atLeast(user, "manager")) throw new HttpError(403, "Only a manager can mark content as published.");
-      return data;
+      return "stage" in data ? { ...data, published_at: data.stage === "published" ? row.published_at || new Date().toISOString() : null } : data;
+    },
+    afterUpdate: (row, before, user) => {
+      if (row.stage === "review" && before.stage !== "review") notify(managerIds(), user, `${user.name} moved “${row.title}” to review`, `content?item=${row.id}`);
+      return null;
     },
     canEdit: () => true,
     canDelete: (user) => atLeast(user, "manager"),
@@ -267,6 +282,7 @@ const RESOURCES = {
         ? all("SELECT * FROM approvals ORDER BY CASE status WHEN 'pending' THEN 0 ELSE 1 END, id DESC")
         : all("SELECT * FROM approvals WHERE requested_by = ? ORDER BY id DESC", user.id),
     beforeCreate: (data, user) => ({ ...data, requested_by: user.id }),
+    afterCreate: (row, user) => notify(managerIds(), user, `${user.name} asked for approval: “${row.title}”${row.amount !== null ? ` (R${Number(row.amount).toLocaleString("en-ZA")})` : ""}`, "approvals"),
     canEdit: (user, row) => row.requested_by === user.id && row.status === "pending",
     canDelete: (user, row) => (row.requested_by === user.id && row.status === "pending") || atLeast(user, "admin"),
   },
@@ -281,6 +297,37 @@ function update(table, id, data) {
   const keys = Object.keys(data);
   if (keys.length) run(`UPDATE ${table} SET ${keys.map((k) => `${k} = ?`).join(", ")} WHERE id = ?`, ...keys.map((k) => data[k]), id);
   return get(`SELECT * FROM ${table} WHERE id = ?`, id);
+}
+
+// ─────────────────────────── Notifications ───────────────────────────
+const managerIds = () => all("SELECT id FROM users WHERE active = 1 AND role IN ('manager', 'admin')").map((r) => r.id);
+/** Tells people about something that involves them (never the person who did it). */
+function notify(userIds, actor, message, link) {
+  for (const id of new Set([].concat(userIds))) {
+    if (!id || id === actor.id || !get("SELECT id FROM users WHERE id = ? AND active = 1", id)) continue;
+    run("INSERT INTO notifications (user_id, message, link) VALUES (?, ?, ?)", id, message, link ?? null);
+  }
+}
+
+// ─────────────────────────── Repeating tasks ───────────────────────────
+const isoLocal = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+function advance(dateStr, recurrence) {
+  const d = new Date(`${dateStr}T00:00:00`);
+  if (recurrence === "weekly") d.setDate(d.getDate() + 7);
+  else {
+    const dayOfMonth = d.getDate();
+    d.setMonth(d.getMonth() + 1);
+    if (d.getDate() !== dayOfMonth) d.setDate(0); // 31 Jan → 28/29 Feb
+  }
+  return isoLocal(d);
+}
+/** When a repeating task is done, adds the next one (once) and returns its due date. */
+function scheduleNext(task) {
+  let due = advance(task.due_date || localToday(), task.recurrence);
+  while (due < localToday()) due = advance(due, task.recurrence);
+  const exists = get("SELECT id FROM tasks WHERE title = ? AND recurrence = ? AND status <> 'done' AND due_date = ? AND assignee_id IS ?", task.title, task.recurrence, due, task.assignee_id);
+  if (!exists) insert("tasks", { title: task.title, notes: task.notes, priority: task.priority, assignee_id: task.assignee_id, created_by: task.created_by, recurrence: task.recurrence, due_date: due });
+  return due;
 }
 
 // ─────────────────────────── Finance & dashboard ───────────────────────────
@@ -343,6 +390,95 @@ function dashboard(user) {
     upcomingMeetings: all("SELECT * FROM meetings WHERE date >= ? ORDER BY date LIMIT 5", today),
     activity: all(`SELECT a.summary, a.created_at, u.name AS user_name FROM activity a LEFT JOIN users u ON u.id = a.user_id ${manager ? "" : "WHERE a.audience = 'all'"} ORDER BY a.id DESC LIMIT 12`),
   };
+}
+
+// ─────────────────────────── Monthly report ───────────────────────────
+function monthlyReport(month) {
+  const [y, m] = month.split("-").map(Number);
+  const start = `${month}-01`;
+  const next = isoLocal(new Date(y, m, 1));
+  const prevStart = isoLocal(new Date(y, m - 2, 1));
+  const total = (kind, from, to) => get("SELECT COALESCE(SUM(amount), 0) AS t FROM transactions WHERE kind = ? AND date >= ? AND date < ?", kind, from, to).t;
+  const income = total("income", start, next);
+  const expense = total("expense", start, next);
+  const prevIncome = total("income", prevStart, start);
+  const prevExpense = total("expense", prevStart, start);
+  const opening = Number(getSetting("opening_balance", "0"));
+  const cashEnd = opening + total("income", "0000-01-01", next) - total("expense", "0000-01-01", next);
+  const burnStart = isoLocal(new Date(y, m - 3, 1));
+  const burn = (total("expense", burnStart, next) - total("income", burnStart, next)) / 3;
+  const meetings = all("SELECT title, date, decisions FROM meetings WHERE date >= ? AND date < ? ORDER BY date", start, next);
+  const approved = get("SELECT COUNT(*) AS n, COALESCE(SUM(amount), 0) AS t FROM approvals WHERE status = 'approved' AND decided_at >= ? AND decided_at < ?", start, next);
+  return {
+    month,
+    company: getSetting("company_name", "Integral Academy"),
+    money: {
+      income, expense, net: income - expense, prevIncome, prevExpense, cashEnd,
+      avgBurn: burn, runwayMonths: burn > 0 ? Math.max(0, cashEnd) / burn : null,
+      topSpending: all("SELECT category, SUM(amount) AS total FROM transactions WHERE kind = 'expense' AND date >= ? AND date < ? GROUP BY category ORDER BY total DESC LIMIT 5", start, next),
+      incomeBySource: all("SELECT category, SUM(amount) AS total FROM transactions WHERE kind = 'income' AND date >= ? AND date < ? GROUP BY category ORDER BY total DESC", start, next),
+    },
+    schools: {
+      won: all("SELECT school, value, learners FROM leads WHERE won_at >= ? AND won_at < ? ORDER BY won_at", start, next),
+      newLeads: get("SELECT COUNT(*) AS n FROM leads WHERE created_at >= ? AND created_at < ?", start, next).n,
+      openPipeline: get("SELECT COUNT(*) AS n, COALESCE(SUM(value), 0) AS value FROM leads WHERE stage NOT IN ('won', 'lost')"),
+      learnersSigned: get("SELECT COALESCE(SUM(learners), 0) AS n FROM leads WHERE stage = 'won'").n,
+    },
+    content: all("SELECT title, type FROM content WHERE published_at >= ? AND published_at < ? ORDER BY published_at", start, next),
+    tasksDone: get("SELECT COUNT(*) AS n FROM tasks WHERE completed_at >= ? AND completed_at < ?", start, next).n,
+    decisions: meetings.map((mt) => ({ meeting: mt.title, date: mt.date, items: (mt.decisions || "").split("\n").map((d) => d.trim()).filter(Boolean) })).filter((mt) => mt.items.length),
+    approvals: { approved: approved.n, approvedAmount: approved.t, rejected: get("SELECT COUNT(*) AS n FROM approvals WHERE status = 'rejected' AND decided_at >= ? AND decided_at < ?", start, next).n },
+  };
+}
+
+// ─────────────────────────── Bank statement import ───────────────────────────
+const IMPORT_ROW = {
+  kind: { type: "enum", values: ["income", "expense"], required: true },
+  date: { type: "date", required: true },
+  amount: { type: "money", required: true, positive: true },
+  description: { type: "text", required: true, max: 200 },
+  category: { type: "text", max: 60 },
+};
+/**
+ * Adds statement rows as transactions. A row already recorded (same date, type, amount and description) is skipped,
+ * counting repeats so two identical purchases on one day both import once and never twice.
+ */
+function importTransactions(rows, user) {
+  const alreadyThere = new Map();
+  const key = (r) => `${r.date}|${r.kind}|${r.amount}|${r.description.toLowerCase()}`;
+  const invalid = [];
+  const ready = [];
+  rows.forEach((raw, i) => {
+    try {
+      ready.push(validate(IMPORT_ROW, raw && typeof raw === "object" ? raw : {}));
+    } catch (error) {
+      invalid.push({ row: i + 1, error: error.fields ? Object.entries(error.fields).map(([f, msg]) => `${f}: ${msg}`).join(" ") : error.message });
+    }
+  });
+  let imported = 0;
+  let duplicates = 0;
+  db.exec("BEGIN");
+  try {
+    for (const r of ready) {
+      const k = key(r);
+      if (!alreadyThere.has(k)) alreadyThere.set(k, get("SELECT COUNT(*) AS n FROM transactions WHERE date = ? AND kind = ? AND amount = ? AND lower(description) = ?", r.date, r.kind, r.amount, r.description.toLowerCase()).n);
+      if (alreadyThere.get(k) > 0) {
+        alreadyThere.set(k, alreadyThere.get(k) - 1);
+        duplicates++;
+        continue;
+      }
+      // Reuse the category last used for the same description, so regular payments sort themselves.
+      const category = r.category || get("SELECT category FROM transactions WHERE lower(description) = ? AND kind = ? ORDER BY date DESC LIMIT 1", r.description.toLowerCase(), r.kind)?.category || "Uncategorised";
+      insert("transactions", { kind: r.kind, date: r.date, amount: r.amount, description: r.description, category, created_by: user.id });
+      imported++;
+    }
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+  if (imported) logActivity(user.id, `${user.name} imported ${imported} transactions from a bank statement`, "manager");
+  return { imported, duplicates, invalid };
 }
 
 // ─────────────────────────── Documents ───────────────────────────
@@ -511,7 +647,26 @@ async function api(req, res, url) {
       myOpenTasks: get("SELECT COUNT(*) AS n FROM tasks WHERE assignee_id = ? AND status <> 'done'", user.id).n,
       myOverdueTasks: get("SELECT COUNT(*) AS n FROM tasks WHERE assignee_id = ? AND status <> 'done' AND due_date < ?", user.id, localToday()).n,
       approvalsToDecide: atLeast(user, "manager") ? get("SELECT COUNT(*) AS n FROM approvals WHERE status = 'pending' AND (requested_by IS NULL OR requested_by <> ?)", user.id).n : 0,
+      unreadNotifications: get("SELECT COUNT(*) AS n FROM notifications WHERE user_id = ? AND read_at IS NULL", user.id).n,
     });
+  }
+
+  // ── Notifications ──
+  if (parts[0] === "notifications") {
+    if (method === "GET" && !parts[1]) {
+      return send(res, 200, {
+        unread: get("SELECT COUNT(*) AS n FROM notifications WHERE user_id = ? AND read_at IS NULL", user.id).n,
+        items: all("SELECT id, message, link, read_at, created_at FROM notifications WHERE user_id = ? ORDER BY id DESC LIMIT 30", user.id),
+      });
+    }
+    if (method === "POST" && parts[1] === "read") {
+      const body = await readJson(req);
+      const ids = Array.isArray(body.ids) ? body.ids.map(Number).filter(Number.isInteger).slice(0, 100) : null;
+      const at = new Date().toISOString();
+      if (ids) for (const id of ids) run("UPDATE notifications SET read_at = ? WHERE id = ? AND user_id = ? AND read_at IS NULL", at, id, user.id);
+      else run("UPDATE notifications SET read_at = ? WHERE user_id = ? AND read_at IS NULL", at, user.id);
+      return send(res, 200, { ok: true });
+    }
   }
 
   // ── Calendar: everything with a date in a range (at most ~2 months) ──
@@ -627,6 +782,7 @@ async function api(req, res, url) {
     const body = validate({ decision: { type: "enum", values: ["approved", "rejected"], required: true }, note: { type: "text", max: 1000 } }, await readJson(req));
     update("approvals", row.id, { status: body.decision, decided_by: user.id, decision_note: body.note ?? null, decided_at: new Date().toISOString() });
     logActivity(user.id, `${user.name} ${body.decision} “${row.title}”`, "manager");
+    notify(row.requested_by, user, `${user.name} ${body.decision} your request “${row.title}”${body.note ? `: “${body.note}”` : ""}`, "approvals");
     return send(res, 200, { ok: true });
   }
 
@@ -638,6 +794,7 @@ async function api(req, res, url) {
     if (method === "POST") {
       const data = validate({ body: { type: "text", required: true, max: 5000 } }, await readJson(req));
       insert("lead_notes", { lead_id: lead.id, body: data.body, author_id: user.id });
+      notify(lead.owner_id, user, `${user.name} added a note on ${lead.school}`, `pipeline?lead=${lead.id}`);
       logActivity(user.id, `${user.name} added a note on ${lead.school}`);
       return send(res, 201, { ok: true });
     }
@@ -689,6 +846,23 @@ async function api(req, res, url) {
     }
   }
 
+  // ── Monthly update report (managers) ──
+  if (parts[0] === "report" && method === "GET") {
+    if (!atLeast(user, "manager")) throw new HttpError(403, "Reports are for managers.");
+    const month = url.searchParams.get("month") || localToday().slice(0, 7);
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month) || month > localToday().slice(0, 7)) throw new HttpError(400, "Choose a month up to this one.");
+    return send(res, 200, monthlyReport(month));
+  }
+
+  // ── Bank statement import (managers) ──
+  if (parts[0] === "transactions" && parts[1] === "import" && method === "POST") {
+    if (!atLeast(user, "manager")) throw new HttpError(403, "You don't have access to this.");
+    const body = await readJson(req, 4 * 1024 * 1024);
+    if (!Array.isArray(body.rows) || body.rows.length === 0) throw new HttpError(422, "There are no rows to import.");
+    if (body.rows.length > 2000) throw new HttpError(422, "Import at most 2 000 rows at a time.");
+    return send(res, 200, importTransactions(body.rows, user));
+  }
+
   // ── Generic resources ──
   const resource = RESOURCES[parts[0]];
   if (resource) {
@@ -700,6 +874,7 @@ async function api(req, res, url) {
       let data = validate(resource.fields, await readJson(req));
       if (resource.beforeCreate) data = resource.beforeCreate(data, user);
       const row = insert(table, data);
+      if (resource.afterCreate) resource.afterCreate(row, user);
       logActivity(user.id, `${user.name} added ${resource.label(row)}`, resource.audience);
       return send(res, 201, row);
     }
@@ -712,6 +887,8 @@ async function api(req, res, url) {
       let data = validate(resource.fields, await readJson(req), { partial: true });
       if (resource.beforeUpdate) data = resource.beforeUpdate(data, row, user);
       const updated = update(table, row.id, data);
+      const extra = resource.afterUpdate ? resource.afterUpdate(updated, row, user) : null;
+      if (extra) Object.assign(updated, extra);
       logActivity(user.id, `${user.name} updated ${resource.label(updated)}`, resource.audience);
       return send(res, 200, updated);
     }
@@ -761,7 +938,10 @@ const server = http.createServer(async (req, res) => {
 });
 
 // Expired sessions are cleared hourly.
-setInterval(() => run("DELETE FROM sessions WHERE expires_at < ?", new Date().toISOString()), 3600000).unref();
+setInterval(() => {
+  run("DELETE FROM sessions WHERE expires_at < ?", new Date().toISOString());
+  run("DELETE FROM notifications WHERE created_at < datetime('now', '-90 days')");
+}, 3600000).unref();
 
 /** Opens the default browser (used by the double-click start scripts). */
 function openBrowser(target) {

@@ -21,7 +21,9 @@
     zar: (v, { compact } = {}) => {
       const n = Number(v ?? 0);
       if (compact && Math.abs(n) >= 1000) return `R${nf({ notation: "compact", maximumFractionDigits: 1 }).format(n)}`.replace("R-", "-R");
-      return `R${nf({ maximumFractionDigits: Math.abs(n) >= 1000 || Number.isInteger(n) ? 0 : 2, minimumFractionDigits: 0 }).format(n)}`.replace("R-", "-R");
+      const cents = Math.round(n * 100) / 100; // whole rands show without decimals; anything with cents shows both digits
+      const digits = Number.isInteger(cents) ? 0 : 2;
+      return `R${nf({ minimumFractionDigits: digits, maximumFractionDigits: digits }).format(cents)}`.replace("R-", "-R");
     },
     number: (v, { decimals } = {}) => (v === null || v === undefined ? "—" : nf({ maximumFractionDigits: decimals ?? 0 }).format(Number(v))),
     percent: (v) => (v === null || v === undefined ? "—" : `${nf({ maximumFractionDigits: 1 }).format(Number(v))}%`),

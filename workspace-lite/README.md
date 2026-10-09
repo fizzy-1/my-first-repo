@@ -11,17 +11,18 @@ A small team workspace for Integral Academy that runs on one of your own compute
 | Area | What it does |
 |---|---|
 | **Dashboard** | Cash and runway (managers), your tasks, overdue work, school follow-ups due this week, pending approvals, content progress, upcoming meetings, team activity |
-| **Tasks** | List or board view; assign, prioritise, set due dates, tick off |
+| **Tasks** | List or board view; assign, prioritise, set due dates, tick off; weekly or monthly repeating tasks schedule their next copy automatically |
 | **Calendar** | Month view (agenda list on phones) of meetings, task deadlines, school follow-ups and content due dates; filter to just your own |
 | **Schools pipeline** | Schools from first contact to signed, with deal value, learner numbers, follow-up dates, call notes and one-click follow-up tasks |
 | **Content** | Board for videos, lessons, worksheets, quizzes and past-paper memos: Idea → Recording → Editing → Review → Published |
-| **Finance** *(managers)* | Income and spending, cash on hand, monthly burn, runway, spending by category, CSV export |
+| **Finance** *(managers)* | Income and spending, cash on hand, monthly burn, runway, spending by category, CSV export; **import a bank statement** (CSV from FNB, Standard Bank, Absa, Nedbank, Capitec and others), with rows already recorded skipped and categories reused from earlier transactions |
+| **Monthly update** *(managers)* | One-page summary of the month: money, schools signed, content published, tasks done, approvals and key decisions. Copy it as text for an email, or print it / save as PDF |
 | **Approvals** | Anyone can request spending approval. A manager approves or rejects it with a note. Nobody can approve their own request |
 | **Meetings** | Notes and decisions. Action items become tasks on the team's list |
 | **Documents** | Upload PDFs, images and Office files (up to 20 MB each). Files can be marked private |
 | **Team & settings** | Add people, set roles, reset passwords, deactivate leavers; set the company name and starting bank balance; download a backup |
 
-Also: **search everything** from the top bar (or press <kbd>Ctrl</kbd>+<kbd>K</kbd> / <kbd>/</kbd>). The sidebar shows **badges** for your open tasks (red if any are overdue) and approvals waiting for a manager.
+Also: **notifications** (the bell) tell people when they're assigned a task, when spending needs their decision, when their request is decided, when someone adds a note on their school, and when content is ready for review. **Search everything** from the top bar (or press <kbd>Ctrl</kbd>+<kbd>K</kbd> / <kbd>/</kbd>). The sidebar shows **badges** for your open tasks (red if any are overdue) and approvals waiting for a manager.
 
 ### Roles
 

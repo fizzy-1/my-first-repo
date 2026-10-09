@@ -4,7 +4,8 @@
  * Permission rules mirror server.js. Also adds a small "Preview" bar for switching between demo accounts. */
 (function () {
   "use strict";
-  const STORE_KEY = "integral-workspace-lite-preview-v1";
+  const STORE_KEY = "integral-workspace-lite-preview-v2";
+  window.WS_PREVIEW = true;
   const DEMO_PASSWORD = "integral-demo-2026";
   const MAX_UPLOAD = 2 * 1024 * 1024;
 
@@ -32,15 +33,16 @@
   // ─────────────────────────── Store ───────────────────────────
   const DEFAULTS = {
     users: { job_title: null, active: 1, must_change_password: 0 },
-    tasks: { notes: null, status: "todo", priority: "medium", due_date: null, assignee_id: null, created_by: null, meeting_id: null, lead_id: null, completed_at: null },
-    leads: { contact_name: null, contact_email: null, contact_phone: null, city: null, stage: "lead", value: 0, learners: null, next_follow_up: null, owner_id: null },
+    tasks: { notes: null, status: "todo", priority: "medium", due_date: null, assignee_id: null, created_by: null, meeting_id: null, lead_id: null, completed_at: null, recurrence: "none" },
+    leads: { contact_name: null, contact_email: null, contact_phone: null, city: null, stage: "lead", value: 0, learners: null, next_follow_up: null, owner_id: null, won_at: null },
     lead_notes: { author_id: null },
-    content: { type: "video", topic: null, stage: "idea", owner_id: null, due_date: null },
+    content: { type: "video", topic: null, stage: "idea", owner_id: null, due_date: null, published_at: null },
     transactions: { counterparty: null, created_by: null },
     approvals: { details: null, amount: null, status: "pending", requested_by: null, decided_by: null, decision_note: null, decided_at: null },
     meetings: { attendees: null, notes: null, decisions: null, created_by: null },
     documents: { folder: "General", private: 0, uploaded_by: null },
     activity: { user_id: null, audience: "all" },
+    notifications: { link: null, read_at: null },
   };
   const TABLES = Object.keys(DEFAULTS);
   let db;
@@ -138,7 +140,7 @@
       ["Rustenburg Secondary", "Mr J. Kekana", "Rustenburg", "proposal", 39000, 130, day(1), sipho],
     ];
     const leadIds = leads.map(([school, contact_name, city, stage, value, learners, next_follow_up, owner_id]) =>
-      insert("leads", { school, contact_name, contact_email: contact_name ? `principal@${school.toLowerCase().replace(/[^a-z]+/g, "").slice(0, 16)}.school.za` : null, city, stage, value, learners, next_follow_up, owner_id }).id,
+      insert("leads", { school, contact_name, contact_email: contact_name ? `principal@${school.toLowerCase().replace(/[^a-z]+/g, "").slice(0, 16)}.school.za` : null, city, stage, value, learners, next_follow_up, owner_id, won_at: stage === "won" ? `${school.startsWith("Thuto") ? monthDay(2, 14) : day(-6)}T09:00:00.000Z` : null }).id,
     );
     insert("lead_notes", { lead_id: leadIds[2], body: "Visited the school. HOD loved the past-paper walkthroughs; asked for a quote for 180 learners.", author_id: kagiso });
     insert("lead_notes", { lead_id: leadIds[2], body: "Proposal sent: R54 000 per year including teacher dashboard access.", author_id: kagiso });
@@ -155,7 +157,7 @@
       ["Analytical geometry: circles", "video", "Analytical geometry", "idea", johan, day(21)],
       ["Financial maths in 15 minutes", "video", "Finance", "editing", nomvula, day(-2)],
     ];
-    for (const [title, type, topic, stage, owner_id, due_date] of content) insert("content", { title, type, topic, stage, owner_id, due_date });
+    for (const [title, type, topic, stage, owner_id, due_date] of content) insert("content", { title, type, topic, stage, owner_id, due_date, published_at: stage === "published" ? `${due_date}T12:00:00.000Z` : null });
 
     const weekly = insert("meetings", {
       title: "Weekly team check-in", date: day(-3), attendees: "Sipho, Ayesha, Johan, Nomvula, Kagiso",
@@ -174,7 +176,8 @@
       ["Prepare Rustenburg proposal", kagiso, day(1), "high", "doing", { lead_id: leadIds[9], meeting_id: weekly }],
       ["Record 2024 Paper 1 memo intro", nomvula, day(-1), "medium", "todo", { meeting_id: weekly }],
       ["Write grant impact report", ayesha, day(9), "high", "doing", { meeting_id: review }],
-      ["Reconcile last month's bank statement", ayesha, day(-2), "medium", "todo", {}],
+      ["Reconcile last month's bank statement", ayesha, day(-2), "medium", "todo", { recurrence: "monthly" }],
+      ["Post weekly exam tips on social media", johan, day(1), "medium", "todo", { recurrence: "weekly" }],
       ["Review trig worksheet draft", johan, day(3), "medium", "todo", {}],
       ["Update pricing sheet for next year", sipho, day(12), "low", "todo", {}],
       ["Call Tembisa High about SGB decision", kagiso, day(-1), "medium", "todo", { lead_id: leadIds[4] }],
@@ -197,6 +200,17 @@
     doc("Team handbook", "Policies", "team-handbook.txt", "text/plain", "Integral Academy team handbook\n\n1. We put learners first.\n2. Spending over R1 000 needs approval in the workspace.\n3. Meeting decisions and action items go in Meetings.\n", sipho);
     doc("Next year's school pricing", "Sales", "school-pricing.csv", "text/csv", "Learners,Price per year (R)\nUp to 100,24000\n101-200,42000\n201+,54000\n", sipho);
     doc("Grant agreement summary", "Finance", "grant-agreement-summary.txt", "text/plain", "Innovation grant: R300 000 in two tranches. Second tranche on approval of the impact report.\n", ayesha, 1);
+
+    const note = (user_id, message, link, read = false) => insert("notifications", { user_id, message, link, read_at: read ? nowIso() : null });
+    for (const manager of [sipho, ayesha, johan]) {
+      note(manager, "Nomvula Khumalo asked for approval: “Ring light and backdrop for recordings” (R3 800)", "approvals");
+      note(manager, "Kagiso Mokoena asked for approval: “Travel to Polokwane for school visits” (R5 200)", "approvals");
+    }
+    note(sipho, "Kagiso Mokoena added a note on Mamelodi Science Academy", `pipeline?lead=${leadIds[2]}`, true);
+    note(nomvula, "Sipho Dlamini assigned you “Record 2024 Paper 1 memo intro”", "tasks");
+    note(kagiso, "Sipho Dlamini assigned you “Send Mamelodi proposal follow-up”", "tasks");
+    note(kagiso, "Sipho Dlamini rejected your request “Billboard near Bree taxi rank”: “Too expensive for now.”", "approvals", true);
+    note(johan, "Ayesha Patel approved your request “Canva Pro for the team”", "approvals", true);
 
     logActivity(sipho, "Sipho Dlamini set up the workspace");
     logActivity(kagiso, "Kagiso Mokoena added a note on Mamelodi Science Academy");
@@ -301,10 +315,17 @@
         title: { type: "text", required: true, max: 200 }, notes: { type: "text", max: 5000 },
         status: { type: "enum", values: ["todo", "doing", "done"] }, priority: { type: "enum", values: ["low", "medium", "high"] },
         due_date: { type: "date" }, assignee_id: { type: "user" }, meeting_id: { type: "int" }, lead_id: { type: "int" },
+        recurrence: { type: "enum", values: ["none", "weekly", "monthly"] },
       },
       list: () => sortBy(db.tasks, (a, b) => (a.status === "done") - (b.status === "done"), ...byDueThenNewest("due_date")),
       beforeCreate: (data, user) => ({ ...data, created_by: user.id, assignee_id: data.assignee_id ?? user.id }),
       beforeUpdate: (data, row) => ("status" in data ? { ...data, completed_at: data.status === "done" ? row.completed_at || nowIso() : null } : data),
+      afterCreate: (row, user) => notify(row.assignee_id, user, `${user.name} assigned you “${row.title}”`, `tasks?task=${row.id}`),
+      afterUpdate: (row, before, user) => {
+        if (row.assignee_id !== before.assignee_id) notify(row.assignee_id, user, `${user.name} assigned you “${row.title}”`, `tasks?task=${row.id}`);
+        if (row.status === "done" && before.status !== "done" && row.recurrence !== "none") return { next_task_due: scheduleNext(row) };
+        return null;
+      },
       canEdit: (user, row) => atLeast(user, "manager") || row.created_by === user.id || row.assignee_id === user.id,
       canDelete: (user, row) => atLeast(user, "manager") || row.created_by === user.id,
     },
@@ -317,7 +338,8 @@
         value: { type: "money" }, learners: { type: "int" }, next_follow_up: { type: "date" }, owner_id: { type: "user" },
       },
       list: () => sortBy(db.leads, (a, b) => cmp(a.school, b.school)),
-      beforeCreate: (data, user) => ({ ...data, owner_id: data.owner_id ?? user.id }),
+      beforeCreate: (data, user) => ({ ...data, owner_id: data.owner_id ?? user.id, won_at: data.stage === "won" ? nowIso() : null }),
+      beforeUpdate: (data, row) => ("stage" in data ? { ...data, won_at: data.stage === "won" ? row.won_at || nowIso() : null } : data),
       canEdit: () => true,
       canDelete: (user) => atLeast(user, "manager"),
       onDelete: (row) => {
@@ -333,10 +355,17 @@
         owner_id: { type: "user" }, due_date: { type: "date" },
       },
       list: () => sortBy(db.content, ...byDueThenNewest("due_date")),
-      beforeCreate: (data, user) => ({ ...data, owner_id: data.owner_id ?? user.id }),
+      beforeCreate: (data, user) => {
+        if (data.stage === "published" && !atLeast(user, "manager")) throw new HttpError(403, "Only a manager can mark content as published.");
+        return { ...data, owner_id: data.owner_id ?? user.id, published_at: data.stage === "published" ? nowIso() : null };
+      },
       beforeUpdate: (data, row, user) => {
         if (data.stage === "published" && !atLeast(user, "manager")) throw new HttpError(403, "Only a manager can mark content as published.");
-        return data;
+        return "stage" in data ? { ...data, published_at: data.stage === "published" ? row.published_at || nowIso() : null } : data;
+      },
+      afterUpdate: (row, before, user) => {
+        if (row.stage === "review" && before.stage !== "review") notify(managerIds(), user, `${user.name} moved “${row.title}” to review`, `content?item=${row.id}`);
+        return null;
       },
       canEdit: () => true,
       canDelete: (user) => atLeast(user, "manager"),
@@ -379,6 +408,7 @@
           ? sortBy(db.approvals, (a, b) => (a.status !== "pending") - (b.status !== "pending"), (a, b) => b.id - a.id)
           : sortBy(db.approvals.filter((a) => a.requested_by === user.id), (a, b) => b.id - a.id),
       beforeCreate: (data, user) => ({ ...data, requested_by: user.id }),
+      afterCreate: (row, user) => notify(managerIds(), user, `${user.name} asked for approval: “${row.title}”${row.amount !== null ? ` (R${Number(row.amount).toLocaleString("en-ZA")})` : ""}`, "approvals"),
       canEdit: (user, row) => row.requested_by === user.id && row.status === "pending",
       canDelete: (user, row) => (row.requested_by === user.id && row.status === "pending") || atLeast(user, "admin"),
     },
@@ -387,6 +417,107 @@
     if (data.meeting_id != null && !byId("meetings", data.meeting_id)) throw new HttpError(422, "A linked record is missing.");
     if (data.lead_id != null && !byId("leads", data.lead_id)) throw new HttpError(422, "A linked record is missing.");
   };
+
+  // ─────────────────────────── Notifications & repeating tasks ───────────────────────────
+  const managerIds = () => db.users.filter((u) => u.active && (u.role === "manager" || u.role === "admin")).map((u) => u.id);
+  function notify(userIds, actor, message, link) {
+    for (const id of new Set([].concat(userIds))) {
+      const target = id && id !== actor.id && byId("users", id);
+      if (target && target.active) insert("notifications", { user_id: id, message, link: link ?? null });
+    }
+  }
+  function advance(dateStr, recurrence) {
+    const d = new Date(`${dateStr}T00:00:00`);
+    if (recurrence === "weekly") d.setDate(d.getDate() + 7);
+    else {
+      const dayOfMonth = d.getDate();
+      d.setMonth(d.getMonth() + 1);
+      if (d.getDate() !== dayOfMonth) d.setDate(0);
+    }
+    return isoDay(d);
+  }
+  function scheduleNext(task) {
+    let due = advance(task.due_date || localToday(), task.recurrence);
+    while (due < localToday()) due = advance(due, task.recurrence);
+    const exists = db.tasks.some((t) => t.title === task.title && t.recurrence === task.recurrence && t.status !== "done" && t.due_date === due && t.assignee_id === task.assignee_id);
+    if (!exists) insert("tasks", { title: task.title, notes: task.notes, priority: task.priority, assignee_id: task.assignee_id, created_by: task.created_by, recurrence: task.recurrence, due_date: due });
+    return due;
+  }
+
+  // ─────────────────────────── Monthly report & statement import ───────────────────────────
+  function monthlyReport(month) {
+    const [y, m] = month.split("-").map(Number);
+    const start = `${month}-01`;
+    const next = isoDay(new Date(y, m, 1));
+    const prevStart = isoDay(new Date(y, m - 2, 1));
+    const total = (kind, from, to) => db.transactions.filter((t) => t.kind === kind && t.date >= from && t.date < to).reduce((s, t) => s + t.amount, 0);
+    const income = total("income", start, next);
+    const expense = total("expense", start, next);
+    const cashEnd = (Number(getSetting("opening_balance", "0")) || 0) + total("income", "0000-01-01", next) - total("expense", "0000-01-01", next);
+    const burnStart = isoDay(new Date(y, m - 3, 1));
+    const burn = (total("expense", burnStart, next) - total("income", burnStart, next)) / 3;
+    const inMonth = (v) => v && v >= start && v < next;
+    const byCategory = (kind) => {
+      const out = {};
+      for (const t of db.transactions) if (t.kind === kind && t.date >= start && t.date < next) out[t.category] = (out[t.category] || 0) + t.amount;
+      return Object.entries(out).map(([category, sum]) => ({ category, total: sum })).sort((a, b) => b.total - a.total);
+    };
+    const decided = (status) => db.approvals.filter((a) => a.status === status && inMonth(a.decided_at));
+    const openLeads = db.leads.filter((l) => !["won", "lost"].includes(l.stage));
+    return {
+      month,
+      company: getSetting("company_name", "Integral Academy"),
+      money: {
+        income, expense, net: income - expense, prevIncome: total("income", prevStart, start), prevExpense: total("expense", prevStart, start), cashEnd,
+        avgBurn: burn, runwayMonths: burn > 0 ? Math.max(0, cashEnd) / burn : null, topSpending: byCategory("expense").slice(0, 5), incomeBySource: byCategory("income"),
+      },
+      schools: {
+        won: sortBy(db.leads.filter((l) => inMonth(l.won_at)), (a, b) => cmp(a.won_at, b.won_at)).map((l) => ({ school: l.school, value: l.value, learners: l.learners })),
+        newLeads: db.leads.filter((l) => inMonth(l.created_at)).length,
+        openPipeline: { n: openLeads.length, value: openLeads.reduce((s, l) => s + (l.value || 0), 0) },
+        learnersSigned: db.leads.filter((l) => l.stage === "won").reduce((s, l) => s + (l.learners || 0), 0),
+      },
+      content: sortBy(db.content.filter((c) => inMonth(c.published_at)), (a, b) => cmp(a.published_at, b.published_at)).map((c) => ({ title: c.title, type: c.type })),
+      tasksDone: db.tasks.filter((t) => inMonth(t.completed_at)).length,
+      decisions: sortBy(db.meetings.filter((mt) => inMonth(mt.date)), (a, b) => cmp(a.date, b.date)).map((mt) => ({ meeting: mt.title, date: mt.date, items: (mt.decisions || "").split("\n").map((d) => d.trim()).filter(Boolean) })).filter((mt) => mt.items.length),
+      approvals: { approved: decided("approved").length, approvedAmount: decided("approved").reduce((s, a) => s + (a.amount || 0), 0), rejected: decided("rejected").length },
+    };
+  }
+  const IMPORT_ROW = {
+    kind: { type: "enum", values: ["income", "expense"], required: true },
+    date: { type: "date", required: true },
+    amount: { type: "money", required: true, positive: true },
+    description: { type: "text", required: true, max: 200 },
+    category: { type: "text", max: 60 },
+  };
+  function importTransactions(rows, user) {
+    const alreadyThere = new Map();
+    const invalid = [];
+    const ready = [];
+    rows.forEach((raw, i) => {
+      try {
+        ready.push(validate(IMPORT_ROW, raw && typeof raw === "object" ? raw : {}));
+      } catch (error) {
+        invalid.push({ row: i + 1, error: error.fields ? Object.entries(error.fields).map(([f, msg]) => `${f}: ${msg}`).join(" ") : error.message });
+      }
+    });
+    let imported = 0;
+    let duplicates = 0;
+    for (const r of ready) {
+      const k = `${r.date}|${r.kind}|${r.amount}|${r.description.toLowerCase()}`;
+      if (!alreadyThere.has(k)) alreadyThere.set(k, db.transactions.filter((t) => t.date === r.date && t.kind === r.kind && t.amount === r.amount && t.description.toLowerCase() === r.description.toLowerCase()).length);
+      if (alreadyThere.get(k) > 0) {
+        alreadyThere.set(k, alreadyThere.get(k) - 1);
+        duplicates++;
+        continue;
+      }
+      const earlier = sortBy(db.transactions.filter((t) => t.kind === r.kind && t.description.toLowerCase() === r.description.toLowerCase()), (a, b) => cmp(b.date, a.date))[0];
+      insert("transactions", { kind: r.kind, date: r.date, amount: r.amount, description: r.description, category: r.category || (earlier && earlier.category) || "Uncategorised", created_by: user.id });
+      imported++;
+    }
+    if (imported) logActivity(user.id, `${user.name} imported ${imported} transactions from a bank statement`, "manager");
+    return { imported, duplicates, invalid };
+  }
 
   // ─────────────────────────── Finance & dashboard ───────────────────────────
   function lastMonths(n) {
@@ -543,7 +674,31 @@
         myOpenTasks: mine.length,
         myOverdueTasks: mine.filter((t) => t.due_date && t.due_date < localToday()).length,
         approvalsToDecide: atLeast(user, "manager") ? db.approvals.filter((a) => a.status === "pending" && a.requested_by !== user.id).length : 0,
+        unreadNotifications: db.notifications.filter((n) => n.user_id === user.id && !n.read_at).length,
       }];
+    }
+    if (parts[0] === "notifications") {
+      const mine = db.notifications.filter((n) => n.user_id === user.id);
+      if (method === "GET" && !parts[1]) return [200, { unread: mine.filter((n) => !n.read_at).length, items: sortBy(mine, (a, b) => b.id - a.id).slice(0, 30).map(({ id, message, link, read_at, created_at }) => ({ id, message, link, read_at, created_at })) }];
+      if (method === "POST" && parts[1] === "read") {
+        const input = body();
+        const ids = Array.isArray(input.ids) ? input.ids.map(Number) : null;
+        for (const n of mine) if (!n.read_at && (!ids || ids.includes(n.id))) n.read_at = nowIso();
+        return [200, { ok: true }];
+      }
+    }
+    if (parts[0] === "report" && method === "GET") {
+      if (!atLeast(user, "manager")) throw new HttpError(403, "Reports are for managers.");
+      const month = url.searchParams.get("month") || localToday().slice(0, 7);
+      if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month) || month > localToday().slice(0, 7)) throw new HttpError(400, "Choose a month up to this one.");
+      return [200, monthlyReport(month)];
+    }
+    if (parts[0] === "transactions" && parts[1] === "import" && method === "POST") {
+      if (!atLeast(user, "manager")) throw new HttpError(403, "You don't have access to this.");
+      const input = body();
+      if (!Array.isArray(input.rows) || input.rows.length === 0) throw new HttpError(422, "There are no rows to import.");
+      if (input.rows.length > 2000) throw new HttpError(422, "Import at most 2 000 rows at a time.");
+      return [200, importTransactions(input.rows, user)];
     }
     if (parts[0] === "calendar" && method === "GET") {
       const from = url.searchParams.get("from") || "";
@@ -631,6 +786,7 @@
       const data = validate({ decision: { type: "enum", values: ["approved", "rejected"], required: true }, note: { type: "text", max: 1000 } }, body());
       Object.assign(row, { status: data.decision, decided_by: user.id, decision_note: data.note ?? null, decided_at: nowIso() });
       logActivity(user.id, `${user.name} ${data.decision} “${row.title}”`, "manager");
+      notify(row.requested_by, user, `${user.name} ${data.decision} your request “${row.title}”${data.note ? `: “${data.note}”` : ""}`, "approvals");
       return [200, { ok: true }];
     }
 
@@ -641,6 +797,7 @@
       if (method === "POST") {
         const data = validate({ body: { type: "text", required: true, max: 5000 } }, body());
         insert("lead_notes", { lead_id: lead.id, body: data.body, author_id: user.id });
+        notify(lead.owner_id, user, `${user.name} added a note on ${lead.school}`, `pipeline?lead=${lead.id}`);
         logActivity(user.id, `${user.name} added a note on ${lead.school}`);
         return [201, { ok: true }];
       }
@@ -684,6 +841,7 @@
         if (resource.beforeCreate) data = resource.beforeCreate(data, user);
         checkLinks(data);
         const row = insert(table, data);
+        if (resource.afterCreate) resource.afterCreate(row, user);
         logActivity(user.id, `${user.name} added ${resource.label(row)}`, resource.audience);
         return [201, row];
       }
@@ -696,9 +854,11 @@
         let data = validate(resource.fields, body(), { partial: true });
         if (resource.beforeUpdate) data = resource.beforeUpdate(data, row, user);
         checkLinks(data);
+        const before = { ...row };
         Object.assign(row, data);
+        const extra = resource.afterUpdate ? resource.afterUpdate(row, before, user) : null;
         logActivity(user.id, `${user.name} updated ${resource.label(row)}`, resource.audience);
-        return [200, row];
+        return [200, extra ? { ...row, ...extra } : row];
       }
       if (method === "DELETE") {
         if (!resource.canDelete(user, row)) throw new HttpError(403, "You can't delete this.");

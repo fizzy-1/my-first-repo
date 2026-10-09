@@ -100,6 +100,17 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
 .search-trigger { display: inline-flex; align-items: center; gap: 8px; height: 36px; padding: 0 10px; min-width: 36px; justify-content: center; border-radius: 8px; border: 1px solid var(--border); background: var(--card); color: var(--muted-fg); cursor: pointer; font-size: 13px; }
 .search-trigger:hover { color: var(--fg); }
 .search-trigger kbd { font: 11px ui-monospace, Menlo, Consolas, monospace; padding: 1px 5px; border-radius: 4px; background: var(--muted); margin-left: 18px; }
+.icon-button { position: relative; display: grid; place-items: center; width: 36px; height: 36px; border-radius: 8px; border: 1px solid transparent; background: transparent; color: var(--fg); cursor: pointer; }
+.icon-button:hover { background: var(--accent); }
+.bell-badge { position: absolute; top: 3px; right: 2px; min-width: 17px; height: 17px; padding: 0 4px; border-radius: 99px; background: var(--danger); color: #fff; font-size: 10px; font-weight: 700; line-height: 17px; text-align: center; box-shadow: 0 0 0 2px var(--bg); }
+.popover { position: absolute; right: 0; top: calc(100% + 8px); z-index: 70; width: min(380px, calc(100vw - 32px)); background: var(--card); color: var(--fg); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 16px 40px rgb(0 0 0 / .22); overflow: hidden; }
+@media (max-width: 640px) { .popover { position: fixed; left: 16px; right: 16px; top: 72px; width: auto; } }
+@media print {
+  .sidebar, .topbar, .no-print, .toast-stack, .pv-bar { display: none !important; }
+  :root:not(#print) { --bg: #fff; --card: #fff; --fg: #111; --muted-fg: #4a4a4a; --border: #d9d9d9; --subtle: #f7f7f7; --muted: #eee; color-scheme: light; }
+  body { background: #fff; color: #111; }
+  .content { padding: 0; max-width: none; }
+}
 .pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 </style>
 </head>

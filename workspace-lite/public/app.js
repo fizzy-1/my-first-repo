@@ -69,7 +69,9 @@
     approval: { pending: { label: "Pending", tone: "warning" }, approved: { label: "Approved", tone: "success" }, rejected: { label: "Rejected", tone: "danger" } },
     role: { admin: { label: "Admin", tone: "gold" }, manager: { label: "Manager", tone: "primary" }, member: { label: "Member", tone: "neutral" } },
     kind: { income: { label: "Income", tone: "success" }, expense: { label: "Expense", tone: "neutral" } },
+    recurrence: { none: { label: "Does not repeat" }, weekly: { label: "Every week" }, monthly: { label: "Every month" } },
   };
+  const nextDueMessage = (r, fallback) => (r && r.next_task_due ? `Done. The next one is due ${fmt.date(r.next_task_due)}.` : fallback);
   const columnsOf = (meta) => Object.entries(meta).map(([id, m]) => ({ id, label: m.label }));
   const RANK = { member: 1, manager: 2, admin: 3 };
   const atLeast = (user, role) => RANK[user.role] >= RANK[role];
@@ -217,6 +219,7 @@
     { name: "due_date", label: "Due", type: "date" },
     { name: "priority", label: "Priority", type: "select", options: META.priority, default: "medium" },
     { name: "status", label: "Status", type: "select", options: META.taskStatus, default: "todo" },
+    { name: "recurrence", label: "Repeats", type: "select", options: META.recurrence, default: "none", hint: "When it's done, the next one is added automatically." },
     { name: "notes", label: "Notes", type: "textarea", full: true, rows: 3 },
   ];
   const LEAD_FIELDS = [
@@ -262,7 +265,7 @@
 
   // ─────────────────────────── Dashboard ───────────────────────────
   function DashboardView() {
-    const { user, userName } = useApp();
+    const { user, userName, toast } = useApp();
     const res = useResource("/api/dashboard");
     const act = useAction();
     const hour = new Date().getHours();
@@ -274,7 +277,8 @@
         const won = d.pipeline.find((p) => p.stage === "won");
         const f = d.finance;
         const complete = async (t) => {
-          await act(() => api("PATCH", `/api/tasks/${t.id}`, { status: "done" }), "Task completed");
+          const r = await act(() => api("PATCH", `/api/tasks/${t.id}`, { status: "done" }));
+          if (r) toast(nextDueMessage(r, "Task completed"));
           res.reload();
         };
         return html`<div style=${{ display: "grid", gap: 16 }}>
@@ -346,9 +350,11 @@
       <${FormModal} open=${open} onClose=${onClose} title=${task ? "Edit task" : "New task"} fields=${TASK_FIELDS} initial=${task || { assignee_id: user.id, ...defaults }}
         submitLabel=${task ? "Save" : "Add task"}
         onSubmit=${async (v) => {
-          if (task) await api("PATCH", `/api/tasks/${task.id}`, v);
-          else await api("POST", "/api/tasks", { ...v, lead_id: defaults && defaults.lead_id, meeting_id: defaults && defaults.meeting_id });
-          onSaved(task ? "Task updated" : "Task added");
+          if (task) onSaved(nextDueMessage(await api("PATCH", `/api/tasks/${task.id}`, v), "Task updated"));
+          else {
+            await api("POST", "/api/tasks", { ...v, lead_id: defaults && defaults.lead_id, meeting_id: defaults && defaults.meeting_id });
+            onSaved("Task added");
+          }
         }}
         extraFooter=${canDelete && html`<${Button} variant="ghost" icon="trash-2" style=${{ color: "var(--danger)" }} onClick=${() => confirm(`Delete “${task.title}”?`, async () => { await act(() => api("DELETE", `/api/tasks/${task.id}`)); onSaved("Task deleted"); })}>Delete<//>`} />
       ${confirmDialog}
@@ -368,7 +374,8 @@
       res.reload();
     };
     const setStatus = async (t, status) => {
-      await act(() => api("PATCH", `/api/tasks/${t.id}`, { status }));
+      const r = await act(() => api("PATCH", `/api/tasks/${t.id}`, { status }));
+      if (r && r.next_task_due) toast(nextDueMessage(r));
       res.reload();
     };
     return html`<${Fragment}>
@@ -398,7 +405,7 @@
           empty=${html`<${EmptyState} icon="list-checks" title=${scope === "mine" ? "No open tasks for you" : "No tasks here"} description="Add a task to get started." />`}
           columns=${[
             { key: "done", header: html`<span class="sr-only">Done</span>`, width: 36, render: (t) => html`<input type="checkbox" aria-label=${`Mark “${t.title}” ${t.status === "done" ? "not done" : "done"}`} checked=${t.status === "done"} disabled=${!canEditTask(user, t)} onClick=${(e) => e.stopPropagation()} onChange=${() => setStatus(t, t.status === "done" ? "todo" : "done")} />` },
-            { key: "title", header: "Task", sort: (t) => t.title.toLowerCase(), render: (t) => html`<span style=${{ textDecoration: t.status === "done" ? "line-through" : "none", color: t.status === "done" ? "var(--muted-fg)" : undefined }}>${t.title}</span>${t.notes && html`<br /><${Muted}>${t.notes.slice(0, 90)}${t.notes.length > 90 ? "…" : ""}<//>`}` },
+            { key: "title", header: "Task", sort: (t) => t.title.toLowerCase(), render: (t) => html`<span style=${{ textDecoration: t.status === "done" ? "line-through" : "none", color: t.status === "done" ? "var(--muted-fg)" : undefined }}>${t.title}</span>${t.recurrence && t.recurrence !== "none" && html` <span title=${`Repeats ${t.recurrence === "weekly" ? "every week" : "every month"}`} aria-label=${`Repeats ${t.recurrence === "weekly" ? "every week" : "every month"}`} style=${{ color: "var(--muted-fg)", display: "inline-flex", verticalAlign: "-2px" }}><${Icon} name="refresh-cw" size=${13} /></span>`}${t.notes && html`<br /><${Muted}>${t.notes.slice(0, 90)}${t.notes.length > 90 ? "…" : ""}<//>`}` },
             { key: "assignee", header: "Assigned to", hideOnMobile: true, sort: (t) => userName(t.assignee_id), render: (t) => html`<${UserChip} name=${t.assignee_id ? userName(t.assignee_id) : null} />` },
             { key: "priority", header: "Priority", hideOnMobile: true, sort: (t) => ({ high: 0, medium: 1, low: 2 })[t.priority], render: (t) => html`<${StatusBadge} meta=${META.priority} value=${t.priority} />` },
             { key: "status", header: "Status", hideOnMobile: true, render: (t) => html`<${StatusBadge} meta=${META.taskStatus} value=${t.status} />` },
@@ -631,6 +638,240 @@
     <//>`;
   }
 
+  // ─────────────────────────── Bank statement import ───────────────────────────
+  /** Reads CSV text (comma, semicolon or tab separated; quoted fields) into rows of trimmed cells. */
+  function parseCsv(text) {
+    text = text.replace(/^﻿/, "");
+    const sample = text.split(/\r?\n/).slice(0, 15).join("\n");
+    const delim = [",", ";", "\t"].map((d) => [d, sample.split(d).length]).sort((a, b) => b[1] - a[1])[0][0];
+    const rows = [];
+    let row = [];
+    let field = "";
+    let quoted = false;
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i];
+      if (quoted) {
+        if (c === '"' && text[i + 1] === '"') {
+          field += '"';
+          i++;
+        } else if (c === '"') quoted = false;
+        else field += c;
+      } else if (c === '"') quoted = true;
+      else if (c === delim) {
+        row.push(field);
+        field = "";
+      } else if (c === "\n" || c === "\r") {
+        if (c === "\r" && text[i + 1] === "\n") i++;
+        row.push(field);
+        rows.push(row);
+        row = [];
+        field = "";
+      } else field += c;
+    }
+    if (field || row.length) {
+      row.push(field);
+      rows.push(row);
+    }
+    return rows.map((r) => r.map((cell) => cell.trim())).filter((r) => r.some(Boolean));
+  }
+  const MONTHS = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, sept: 9, oct: 10, nov: 11, dec: 12 };
+  const DATE_FORMATS = {
+    ymd: { label: "2026-10-31 / 2026/10/31", parse: (v) => { const m = v.match(/^(\d{4})[-/.]?(\d{2})[-/.]?(\d{2})/); return m && [m[1], m[2], m[3]]; } },
+    dmy: { label: "31/10/2026 (day first)", parse: (v) => { const m = v.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})/); return m && [m[3].length === 2 ? `20${m[3]}` : m[3], m[2], m[1]]; } },
+    mdy: { label: "10/31/2026 (month first)", parse: (v) => { const m = v.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})/); return m && [m[3].length === 2 ? `20${m[3]}` : m[3], m[1], m[2]]; } },
+    dmon: { label: "31 Oct 2026", parse: (v) => { const m = v.match(/^(\d{1,2})[\s-]([A-Za-z]{3,9})[\s-](\d{4})/); const mo = m && MONTHS[m[2].toLowerCase().slice(0, m[2].toLowerCase().startsWith("sept") ? 4 : 3)]; return mo && [m[3], String(mo), m[1]]; } },
+  };
+  function parseDate(value, format) {
+    const parts = DATE_FORMATS[format].parse(String(value || "").trim());
+    if (!parts) return null;
+    const [y, m, d] = parts.map(Number);
+    const iso = `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+    const check = new Date(`${iso}T00:00:00Z`);
+    return !Number.isNaN(check.getTime()) && check.toISOString().slice(0, 10) === iso ? iso : null;
+  }
+  /** "R 1 234.56", "-1,234.56", "1234,56", "(99.00)", "250.00 Dr", "250.00-" → signed number, or null. */
+  function parseAmount(value) {
+    let v = String(value || "").replace(/[R\s ]/g, "");
+    if (!v) return null;
+    let sign = 1;
+    if (/^\(.*\)$/.test(v)) {
+      sign = -1;
+      v = v.slice(1, -1);
+    }
+    if (/dr$/i.test(v)) {
+      sign = -sign;
+      v = v.slice(0, -2);
+    } else if (/cr$/i.test(v)) v = v.slice(0, -2);
+    if (v.endsWith("-")) {
+      sign = -sign;
+      v = v.slice(0, -1);
+    }
+    if (v.includes(",") && v.includes(".")) v = v.replace(/,/g, "");
+    else if (/,\d{1,2}$/.test(v)) v = v.replace(/\./g, "").replace(",", ".");
+    else v = v.replace(/,/g, "");
+    const n = Number(v);
+    return Number.isFinite(n) ? sign * n : null;
+  }
+  function sampleStatement() {
+    const d = new Date();
+    const at = (day) => `${String(Math.min(day, d.getDate())).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}/${d.getFullYear()}`;
+    return [
+      "Account,Integral Academy (Pty) Ltd - Business Cheque",
+      "",
+      "Date,Description,Amount,Balance",
+      `${at(1)},Co-working desks,-6500.00,186370.00`,
+      `${at(2)},PayFast payout,"2 350,75",188720.75`,
+      `${at(3)},Google Workspace,-1240.00,187480.75`,
+      `${at(4)},Uber trip to Soweto,-186.40,187294.35`,
+      `${at(5)},School licence - Thuto-Lesedi Secondary,4000.00,191294.35`,
+      `${at(6)},Takealot - tripod,-899.00,190395.35`,
+      `${at(7)},Meta Ads,-2500.00,187895.35`,
+      `${at(8)},Vodacom data bundle,-599.00,187296.35`,
+      `${at(9)},Closing balance,,187296.35`,
+    ].join("\n");
+  }
+  function guessColumn(headers, patterns) {
+    for (const p of patterns) {
+      const i = headers.findIndex((h) => p.test(h));
+      if (i >= 0) return String(i);
+    }
+    return "";
+  }
+  function ImportModal({ open, onClose, onImported }) {
+    const [table, setTable] = useState(null); // { name, headers, rows }
+    const [map, setMap] = useState({});
+    const [error, setError] = useState("");
+    const [busy, setBusy] = useState(false);
+    const [result, setResult] = useState(null);
+    useEffect(() => {
+      if (open) {
+        setTable(null);
+        setMap({});
+        setError("");
+        setResult(null);
+      }
+    }, [open]);
+    const loadText = (text, name) => {
+      const rows = parseCsv(text);
+      if (!rows.length) return setError("That file is empty.");
+      // The header is the first row with the most common column count (skips bank preamble lines).
+      const counts = {};
+      for (const r of rows) counts[r.length] = (counts[r.length] || 0) + 1;
+      const width = Number(Object.entries(counts).filter(([w]) => Number(w) >= 3).sort((a, b) => b[1] - a[1])[0]?.[0]);
+      if (!width) return setError("This doesn't look like a bank statement. It needs at least a date, a description and an amount column.");
+      const start = rows.findIndex((r) => r.length === width);
+      const first = rows[start];
+      const hasHeader = !first.some((c) => Object.keys(DATE_FORMATS).some((f) => parseDate(c, f)) || parseAmount(c) !== null);
+      const headers = hasHeader ? first.map((h, i) => h || `Column ${i + 1}`) : first.map((_, i) => `Column ${i + 1}`);
+      const body = rows.slice(hasHeader ? start + 1 : start).filter((r) => r.length >= Math.min(3, width));
+      if (body.length > 2000) return setError("That statement has more than 2 000 rows. Export a shorter date range.");
+      const date = guessColumn(headers, [/date/i]) || "0";
+      const ins = guessColumn(headers, [/credit|money in|deposit|^in$/i]);
+      const outs = guessColumn(headers, [/debit|money out|withdraw|^out$/i]);
+      const formatScores = Object.keys(DATE_FORMATS).map((f) => [f, body.slice(0, 30).filter((r) => parseDate(r[Number(date)], f)).length]);
+      const format = formatScores.sort((a, b) => b[1] - a[1] || (a[0] === "dmy" ? -1 : 0))[0][0];
+      setTable({ name, headers, rows: body });
+      setMap({
+        date, format,
+        description: guessColumn(headers, [/desc|narr|detail|transaction|reference|particular/i]) || "1",
+        mode: ins && outs ? "split" : "single",
+        amount: guessColumn(headers, [/^amount|amount/i]) || "2", ins, outs, flip: false,
+      });
+      setError("");
+    };
+    const onFile = (file) => {
+      if (!file) return;
+      if (file.size > 3 * 1024 * 1024) return setError("That file is too big. Export a shorter date range.");
+      const reader = new FileReader();
+      reader.onload = () => loadText(String(reader.result), file.name);
+      reader.onerror = () => setError("Couldn't read that file.");
+      reader.readAsText(file);
+    };
+    const parsed = useMemo(() => {
+      if (!table) return null;
+      const ok = [];
+      const bad = [];
+      table.rows.forEach((r, i) => {
+        const date = parseDate(r[Number(map.date)], map.format);
+        const description = (r[Number(map.description)] || "").slice(0, 200);
+        let signed = null;
+        if (map.mode === "single") {
+          const a = parseAmount(r[Number(map.amount)]);
+          signed = a === null ? null : map.flip ? -a : a;
+        } else {
+          const a = Math.abs(parseAmount(r[Number(map.ins)]) || 0);
+          const b = Math.abs(parseAmount(r[Number(map.outs)]) || 0);
+          signed = a ? a : b ? -b : null;
+        }
+        if (!date) bad.push({ line: i + 1, why: `Date “${r[Number(map.date)] || ""}” doesn't match the date format` });
+        else if (!signed) bad.push({ line: i + 1, why: `No amount${description ? ` (${description})` : ""}` });
+        else if (!description) bad.push({ line: i + 1, why: "No description" });
+        else ok.push({ date, description, kind: signed > 0 ? "income" : "expense", amount: Math.round(Math.abs(signed) * 100) / 100 });
+      });
+      return { ok, bad };
+    }, [table, map]);
+    const doImport = async () => {
+      setBusy(true);
+      setError("");
+      try {
+        setResult(await api("POST", "/api/transactions/import", { rows: parsed.ok }));
+        onImported();
+      } catch (err) {
+        setError(err.message);
+      } finally {
+        setBusy(false);
+      }
+    };
+    const columnOptions = table ? table.headers.map((h, i) => ({ value: String(i), label: h })) : [];
+    const set = (k) => (v) => setMap((m) => ({ ...m, [k]: v }));
+    const pick = (id, label, key) => html`<${Field} id=${id} label=${label}><${Select} id=${id} value=${map[key]} onChange=${set(key)} options=${columnOptions} style=${{ width: "100%" }} /><//>`;
+    const footer = result
+      ? html`<${Button} variant="primary" onClick=${onClose}>Done<//>`
+      : html`${table && html`<${Button} variant="ghost" onClick=${() => setTable(null)}>Choose another file<//>`}<span style=${{ flex: 1 }} /><${Button} onClick=${onClose}>Cancel<//>
+        ${table && html`<${Button} variant="primary" icon="upload" disabled=${busy || !parsed || !parsed.ok.length} onClick=${doImport}>${busy ? "Importing…" : `Import ${parsed ? parsed.ok.length : 0} transactions`}<//>`}`;
+    return html`<${Modal} open=${open} onClose=${onClose} title="Import a bank statement" description="Turn your bank's CSV export into transactions. Rows already recorded are skipped." width=${880} footer=${footer}>
+      ${result ? html`<div style=${{ display: "grid", gap: 10 }}>
+          <${EmptyState} icon="check" title=${`Imported ${result.imported} transaction${result.imported === 1 ? "" : "s"}`} description=${[result.duplicates ? `${result.duplicates} already recorded, so skipped.` : "", result.invalid.length ? `${result.invalid.length} couldn't be saved.` : "", "Categories were copied from earlier transactions with the same description; the rest are marked Uncategorised so you can sort them in the table."].filter(Boolean).join(" ")} />
+        </div>`
+      : !table ? html`<div style=${{ display: "grid", gap: 14 }}>
+          <${Field} id="statement-file" label="Statement file (.csv)" hint="In your online banking, download or export your transactions as CSV. FNB, Standard Bank, Absa, Nedbank, Capitec and most other banks offer this.">
+            <input id="statement-file" type="file" accept=".csv,text/csv,text/plain" onChange=${(e) => onFile(e.target.files[0])} />
+          <//>
+          <div><${Button} size="sm" variant="soft" icon="file-spreadsheet" onClick=${() => loadText(sampleStatement(), "sample-statement.csv")}>Try a sample statement<//></div>
+        </div>`
+      : html`<div style=${{ display: "grid", gap: 14 }}>
+          <div><${Muted}>${table.name} · ${table.rows.length} rows. Check that the columns are matched correctly.<//></div>
+          <div class="form-grid">
+            ${pick("map-date", "Date column", "date")}
+            <${Field} id="map-format" label="Date format"><${Select} id="map-format" value=${map.format} onChange=${set("format")} options=${Object.entries(DATE_FORMATS).map(([value, f]) => ({ value, label: f.label }))} style=${{ width: "100%" }} /><//>
+            ${pick("map-desc", "Description column", "description")}
+            <${Field} id="map-mode" label="Amounts"><${Select} id="map-mode" value=${map.mode} onChange=${set("mode")} options=${[{ value: "single", label: "One column (minus = money out)" }, { value: "split", label: "Separate money in / out columns" }]} style=${{ width: "100%" }} /><//>
+            ${map.mode === "single" ? pick("map-amount", "Amount column", "amount") : html`${pick("map-in", "Money in column", "ins")}${pick("map-out", "Money out column", "outs")}`}
+            ${map.mode === "single" && html`<label style=${{ display: "flex", alignItems: "center", gap: 8, fontSize: 13.5, alignSelf: "end", paddingBottom: 8 }}><input type="checkbox" checked=${map.flip} onChange=${(e) => set("flip")(e.target.checked)} />Money out shows as a positive number</label>`}
+          </div>
+          ${parsed && html`<div style=${{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            <${Badge} tone="success" dot>${parsed.ok.filter((r) => r.kind === "income").length} money in<//>
+            <${Badge} dot>${parsed.ok.filter((r) => r.kind === "expense").length} money out<//>
+            ${parsed.bad.length > 0 && html`<${Badge} tone="warning" dot title=${parsed.bad.slice(0, 8).map((b) => `Row ${b.line}: ${b.why}`).join("\n")}>${parsed.bad.length} row${parsed.bad.length === 1 ? "" : "s"} will be left out<//>`}
+          </div>`}
+          ${parsed && parsed.bad.length > 0 && html`<${Muted}>Left out: ${parsed.bad.slice(0, 3).map((b) => `row ${b.line} (${b.why})`).join("; ")}${parsed.bad.length > 3 ? "…" : ""}. Balance lines are normal to leave out.<//>`}
+          <div style=${{ overflowX: "auto", border: "1px solid var(--border)", borderRadius: 10 }}>
+            <table style=${{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+              <thead><tr>${["Date", "Description", "Type", "Amount"].map((h) => html`<th key=${h} style=${{ textAlign: h === "Amount" ? "right" : "left", padding: "8px 12px", color: "var(--muted-fg)", fontWeight: 500, borderBottom: "1px solid var(--border)" }}>${h}</th>`)}</tr></thead>
+              <tbody>${(parsed ? parsed.ok.slice(0, 12) : []).map((r, i) => html`<tr key=${i} style=${{ borderTop: i ? "1px solid var(--border)" : 0 }}>
+                <td style=${{ padding: "7px 12px", whiteSpace: "nowrap" }}>${fmt.date(r.date)}</td>
+                <td style=${{ padding: "7px 12px" }}>${r.description}</td>
+                <td style=${{ padding: "7px 12px" }}><${StatusBadge} meta=${META.kind} value=${r.kind} /></td>
+                <td class="tabular" style=${{ padding: "7px 12px", textAlign: "right", whiteSpace: "nowrap" }}>${r.kind === "expense" ? "−" : "+"}${fmt.zar(r.amount)}</td>
+              </tr>`)}</tbody>
+            </table>
+          </div>
+          ${parsed && parsed.ok.length > 12 && html`<${Muted}>…and ${parsed.ok.length - 12} more.<//>`}
+        </div>`}
+      ${error && html`<div role="alert" style=${{ padding: "8px 12px", borderRadius: 8, background: "var(--danger-soft)", color: "var(--danger)", fontSize: 13 }}>${error}</div>`}
+    <//>`;
+  }
+
   // ─────────────────────────── Finance ───────────────────────────
   function downloadCsv(name, rows) {
     const esc = (v) => {
@@ -652,6 +893,7 @@
     const act = useAction();
     const [editing, setEditing] = useState(null);
     const [kind, setKind] = useState("");
+    const [importing, setImporting] = useState(false);
     const [confirm, confirmDialog] = useConfirm();
     const reload = () => {
       summary.reload();
@@ -662,6 +904,7 @@
     return html`<${Fragment}>
       <${PageHeader} title="Finance" description="Money in, money out, and how long the cash lasts." actions=${html`
         <${Select} ariaLabel="Period" value=${months} onChange=${setMonths} options=${[{ value: "6", label: "Last 6 months" }, { value: "12", label: "Last 12 months" }, { value: "24", label: "Last 24 months" }]} />
+        <${Button} icon="upload" onClick=${() => setImporting(true)}>Import statement<//>
         <${Button} variant="primary" icon="plus" onClick=${() => setEditing("new")}>Add transaction<//>`} />
       <${Loaded} res=${summary}>${(s) => html`<div style=${{ display: "grid", gap: 16, marginBottom: 16 }}>
         ${s.openingBalance === 0 && atLeast(user, "admin") && html`<${Card} style=${{ padding: "12px 16px", background: "var(--gold-soft)", color: "var(--gold-fg)", fontSize: 13.5 }}>
@@ -696,6 +939,7 @@
             { key: "amount", header: "Amount", align: "right", sort: (t) => (t.kind === "expense" ? -t.amount : t.amount), render: (t) => html`<strong class="tabular" style=${{ fontWeight: 600, whiteSpace: "nowrap" }}>${t.kind === "expense" ? "−" : "+"}${fmt.zar(t.amount)}</strong>` },
           ]} /><//>`;
       }}<//>
+      <${ImportModal} open=${importing} onClose=${() => setImporting(false)} onImported=${reload} />
       <datalist id="tx-categories">${[...new Set([...categories, "Salaries", "Software", "Marketing", "Equipment", "Rent", "Travel", "Subscriptions", "School contracts", "Grants"])].map((c) => html`<option key=${c} value=${c} />`)}</datalist>
       <${FormModal} open=${Boolean(editing)} onClose=${() => setEditing(null)} title=${item ? "Edit transaction" : "Add transaction"} fields=${TX_FIELDS} initial=${item || { date: today() }}
         submitLabel=${item ? "Save" : "Add"}
@@ -708,6 +952,100 @@
           reload();
         }} />
       ${confirmDialog}
+    <//>`;
+  }
+
+  // ─────────────────────────── Monthly update ───────────────────────────
+  const pctChange = (now, before) => (before ? ((now - before) / before) * 100 : null);
+  function reportText(r, monthLabel) {
+    const m = r.money;
+    const lines = [
+      `${r.company} — ${monthLabel} update`,
+      "",
+      "MONEY",
+      `Income: ${fmt.zar(m.income)}${m.prevIncome ? ` (${fmt.delta(pctChange(m.income, m.prevIncome))} on last month)` : ""}`,
+      `Spending: ${fmt.zar(m.expense)}${m.prevExpense ? ` (${fmt.delta(pctChange(m.expense, m.prevExpense))} on last month)` : ""}`,
+      `Net: ${fmt.zar(m.net)}`,
+      `Cash at month end: ${fmt.zar(m.cashEnd)}`,
+      `Runway: ${m.runwayMonths === null ? "not burning cash (income covers spending)" : `about ${fmt.number(m.runwayMonths, { decimals: 1 })} months at ${fmt.zar(m.avgBurn)} average monthly burn`}`,
+      "",
+      "SCHOOLS",
+      r.schools.won.length ? `Signed this month: ${r.schools.won.map((w) => `${w.school} (${fmt.zar(w.value)}/year${w.learners ? `, ${w.learners} learners` : ""})`).join("; ")}` : "No new schools signed this month.",
+      `New leads: ${r.schools.newLeads} · Open pipeline: ${fmt.zar(r.schools.openPipeline.value)} across ${r.schools.openPipeline.n} schools`,
+      `Learners signed in total: ${fmt.number(r.schools.learnersSigned)}`,
+      "",
+      "CONTENT",
+      r.content.length ? `Published: ${r.content.map((c) => c.title).join("; ")}` : "Nothing published this month.",
+      "",
+      "TEAM",
+      `Tasks completed: ${r.tasksDone}`,
+      `Spending approved: ${r.approvals.approved} request${r.approvals.approved === 1 ? "" : "s"} (${fmt.zar(r.approvals.approvedAmount)})${r.approvals.rejected ? ` · ${r.approvals.rejected} declined` : ""}`,
+    ];
+    if (r.decisions.length) {
+      lines.push("", "KEY DECISIONS");
+      for (const d of r.decisions) for (const item of d.items) lines.push(`- ${item} (${d.meeting}, ${fmt.shortDate(d.date)})`);
+    }
+    return lines.join("\n");
+  }
+  function ReportView() {
+    const { toast } = useApp();
+    const months = Array.from({ length: 12 }, (_, i) => {
+      const d = new Date();
+      d.setDate(1);
+      d.setMonth(d.getMonth() - i);
+      const key = UI.isoDate(d).slice(0, 7);
+      return { value: key, label: d.toLocaleDateString("en-ZA", { month: "long", year: "numeric" }) };
+    });
+    const [month, setMonth] = useState(months[0].value);
+    const [copyText, setCopyText] = useState(null);
+    const res = useResource(`/api/report?month=${month}`);
+    const monthLabel = months.find((m) => m.value === month).label;
+    const copy = (r) => {
+      const text = reportText(r, monthLabel);
+      const fallback = () => setCopyText(text);
+      try {
+        navigator.clipboard.writeText(text).then(() => toast("Copied. Paste it into an email or chat."), fallback);
+      } catch {
+        fallback();
+      }
+    };
+    const block = (title, children) => html`<section style=${{ display: "grid", gap: 8, paddingTop: 18, borderTop: "1px solid var(--border)" }}><h2 style=${{ margin: 0, fontSize: 13, letterSpacing: ".1em", textTransform: "uppercase", color: "var(--muted-fg)" }}>${title}</h2>${children}</section>`;
+    const row = (label, value, extra) => html`<div style=${{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", gap: "2px 12px", fontSize: 14 }}><span style=${{ color: "var(--muted-fg)" }}>${label}</span><span><strong class="tabular" style=${{ fontWeight: 600 }}>${value}</strong>${extra && html` <${Muted}>${extra}<//>`}</span></div>`;
+    return html`<${Fragment}>
+      <${PageHeader} title="Monthly update" description="The month at a glance, ready to send to investors, advisors or the team." actions=${html`
+        <${Select} ariaLabel="Month" value=${month} onChange=${setMonth} options=${months} />
+        ${res.data && html`<${Button} icon="file-text" onClick=${() => copy(res.data)}>Copy as text<//>`}
+        ${!window.WS_PREVIEW && html`<${Button} className="no-print" icon="download" onClick=${() => window.print()}>Print or save PDF<//>`}`} />
+      <${Loaded} res=${res}>${(r) => {
+        const m = r.money;
+        return html`<${Card} style=${{ padding: "24px clamp(16px, 4vw, 40px) 32px", maxWidth: 860, display: "grid", gap: 18 }}>
+          <header style=${{ display: "flex", alignItems: "center", gap: 14 }}>
+            <span class="crest" style=${{ width: 48, height: 48, borderRadius: 12 }}><img src="crest.png" alt="" /></span>
+            <div><div style=${{ fontFamily: "var(--display)", fontWeight: 700, letterSpacing: ".06em" }}>${r.company.toUpperCase()}</div><div style=${{ fontSize: 20, fontWeight: 600 }}>${monthLabel} update</div></div>
+          </header>
+          <${Grid} min=${170} gap=${12}>
+            ${[["Cash at month end", fmt.zar(m.cashEnd)], ["Net for the month", fmt.zar(m.net)], ["Runway", m.runwayMonths === null ? "Not burning" : `${fmt.number(m.runwayMonths, { decimals: 1 })} months`], ["Learners signed", fmt.number(r.schools.learnersSigned)]].map(([l, v]) => html`<div key=${l} style=${{ padding: "12px 14px", borderRadius: 10, background: "var(--subtle)", border: "1px solid var(--border)" }}><${Muted}>${l}<//><div class="tabular" style=${{ fontSize: 20, fontWeight: 600 }}>${v}</div></div>`)}
+          <//>
+          ${block("Money", html`
+            ${row("Income", fmt.zar(m.income), m.prevIncome ? `${fmt.delta(pctChange(m.income, m.prevIncome))} on last month` : null)}
+            ${row("Spending", fmt.zar(m.expense), m.prevExpense ? `${fmt.delta(pctChange(m.expense, m.prevExpense))} on last month` : null)}
+            ${row("Average monthly burn (3 months)", m.avgBurn > 0 ? fmt.zar(m.avgBurn) : "None")}
+            ${m.incomeBySource.length > 0 && html`<div style=${{ fontSize: 13 }}><${Muted}>Income by source: ${m.incomeBySource.map((c) => `${c.category} ${fmt.zar(c.total)}`).join(" · ")}<//></div>`}
+            ${m.topSpending.length > 0 && html`<${BarList} items=${m.topSpending.map((c) => ({ label: c.category, value: c.total }))} format="zar" slot=${2} />`}`)}
+          ${block("Schools", html`
+            ${r.schools.won.length ? r.schools.won.map((w) => html`<div key=${w.school} style=${{ display: "flex", alignItems: "center", gap: 8, fontSize: 14 }}><${Badge} tone="success" dot>Signed<//><strong style=${{ fontWeight: 500 }}>${w.school}</strong><${Muted}>${fmt.zar(w.value)}/year${w.learners ? ` · ${w.learners} learners` : ""}<//></div>`) : html`<${Muted}>No new schools signed this month.<//>`}
+            ${row("New leads", fmt.number(r.schools.newLeads))}
+            ${row("Open pipeline", fmt.zar(r.schools.openPipeline.value), `${r.schools.openPipeline.n} schools`)}`)}
+          ${block("Content", r.content.length ? html`<ul style=${{ margin: 0, paddingLeft: 20, fontSize: 14 }}>${r.content.map((c) => html`<li key=${c.title}>${c.title} <${Muted}>${META.contentType[c.type].label}<//></li>`)}</ul>` : html`<${Muted}>Nothing published this month.<//>`)}
+          ${block("Team", html`
+            ${row("Tasks completed", fmt.number(r.tasksDone))}
+            ${row("Spending approved", fmt.zar(r.approvals.approvedAmount), `${r.approvals.approved} request${r.approvals.approved === 1 ? "" : "s"}${r.approvals.rejected ? `, ${r.approvals.rejected} declined` : ""}`)}`)}
+          ${r.decisions.length > 0 && block("Key decisions", html`<ul style=${{ margin: 0, paddingLeft: 20, fontSize: 14, display: "grid", gap: 4 }}>${r.decisions.flatMap((d) => d.items.map((item, i) => html`<li key=${d.meeting + i}>${item} <${Muted}>${d.meeting}, ${fmt.shortDate(d.date)}<//></li>`))}</ul>`)}
+        <//>`;
+      }}<//>
+      <${Modal} open=${Boolean(copyText)} onClose=${() => setCopyText(null)} title="Copy the update" description="Your browser didn't allow automatic copying. Select the text and copy it.">
+        <textarea readOnly value=${copyText || ""} rows=${16} onFocus=${(e) => e.target.select()} style=${{ width: "100%", padding: 10, borderRadius: 8, border: "1px solid var(--input)", background: "var(--card)", color: "var(--fg)", font: "13px/1.5 ui-monospace, Menlo, Consolas, monospace" }} />
+      <//>
     <//>`;
   }
 
@@ -1244,6 +1582,55 @@
     <//>`;
   }
 
+  // ─────────────────────────── Notifications ───────────────────────────
+  function NotificationsMenu({ unread }) {
+    const [open, setOpen] = useState(false);
+    const [data, setData] = useState(null);
+    const ref = useRef(null);
+    const load = useCallback(() => api("GET", "/api/notifications").then(setData).catch(() => setData({ unread: 0, items: [] })), []);
+    useEffect(() => {
+      if (!open) return undefined;
+      load();
+      const onDown = (e) => ref.current && !ref.current.contains(e.target) && setOpen(false);
+      const onKey = (e) => e.key === "Escape" && setOpen(false);
+      document.addEventListener("mousedown", onDown);
+      window.addEventListener("keydown", onKey);
+      return () => {
+        document.removeEventListener("mousedown", onDown);
+        window.removeEventListener("keydown", onKey);
+      };
+    }, [open, load]);
+    const choose = async (n) => {
+      setOpen(false);
+      if (!n.read_at) await api("POST", "/api/notifications/read", { ids: [n.id] }).catch(() => {});
+      if (n.link) window.location.hash = `#/${n.link}`;
+    };
+    const readAll = async () => {
+      await api("POST", "/api/notifications/read", {}).catch(() => {});
+      load();
+    };
+    return html`<div ref=${ref} style=${{ position: "relative" }}>
+      <button class="icon-button" aria-label=${unread ? `Notifications, ${unread} unread` : "Notifications"} aria-expanded=${open} onClick=${() => setOpen((o) => !o)}>
+        <${Icon} name="bell" />
+        ${unread > 0 && html`<span class="bell-badge tabular">${unread > 9 ? "9+" : unread}</span>`}
+      </button>
+      ${open && html`<div class="popover" role="dialog" aria-label="Notifications">
+        <div style=${{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "12px 14px", borderBottom: "1px solid var(--border)" }}>
+          <strong style=${{ fontSize: 14 }}>Notifications</strong>
+          ${data && data.unread > 0 && html`<button onClick=${readAll} style=${{ all: "unset", cursor: "pointer", fontSize: 12.5, color: "var(--primary)" }}>Mark all as read</button>`}
+        </div>
+        <div style=${{ maxHeight: 420, overflowY: "auto" }}>
+          ${!data ? html`<div style=${{ padding: 20, color: "var(--muted-fg)", fontSize: 13 }}>Loading…</div>`
+            : data.items.length === 0 ? html`<${EmptyState} icon="bell" title="No notifications yet" description="You'll hear here when someone assigns you work, asks for approval or decides your request." />`
+            : data.items.map((n) => html`<button key=${n.id} onClick=${() => choose(n)} style=${{ display: "flex", gap: 10, width: "100%", textAlign: "left", padding: "10px 14px", border: 0, borderBottom: "1px solid var(--border)", background: n.read_at ? "transparent" : "var(--primary-soft)", color: "var(--fg)", cursor: "pointer" }}>
+                <span aria-hidden="true" style=${{ width: 8, height: 8, marginTop: 6, borderRadius: 99, flexShrink: 0, background: n.read_at ? "transparent" : "var(--primary)" }} />
+                <span style=${{ minWidth: 0 }}><span style=${{ display: "block", fontSize: 13, overflowWrap: "anywhere" }}>${n.message}</span><${Muted}>${n.read_at ? "" : "New · "}${fmt.relative(n.created_at)}<//></span>
+              </button>`)}
+        </div>
+      </div>`}
+    </div>`;
+  }
+
   // ─────────────────────────── Shell ───────────────────────────
   const ROUTES = [
     { group: "Work", path: "dashboard", label: "Dashboard", icon: "layout-dashboard", view: DashboardView },
@@ -1253,6 +1640,7 @@
     { group: "Work", path: "content", label: "Content", icon: "video", view: ContentView },
     { group: "Money", path: "finance", label: "Finance", icon: "wallet", view: FinanceView, minRole: "manager" },
     { group: "Money", path: "approvals", label: "Approvals", icon: "circle-check", view: ApprovalsView },
+    { group: "Money", path: "report", label: "Monthly update", icon: "file-text", view: ReportView, minRole: "manager" },
     { group: "Team", path: "meetings", label: "Meetings", icon: "notebook-pen", view: MeetingsView },
     { group: "Team", path: "documents", label: "Documents", icon: "folder-open", view: DocumentsView },
     { group: "Team", path: "team", label: "Team & settings", icon: "users", view: TeamView },
@@ -1344,6 +1732,7 @@
           <button onClick=${() => setSearchOpen(true)} aria-label="Search (Ctrl+K)" class="search-trigger">
             <${Icon} name="search" size=${15} /><span class="hide-sm">Search…</span><kbd class="hide-sm">${/Mac|iPhone|iPad/.test(navigator.platform) ? "⌘ K" : "Ctrl K"}</kbd>
           </button>
+          <${NotificationsMenu} unread=${counts.unreadNotifications || 0} />
           <${Button} variant="ghost" icon=${isDark() ? "sun" : "moon"} ariaLabel=${isDark() ? "Switch to light theme" : "Switch to dark theme"} title="Toggle theme" onClick=${toggleTheme} />
           <a href="#/profile" aria-label="My account" style=${{ display: "inline-flex" }}><${Avatar} name=${user.name} size=${30} /></a>
         </header>
