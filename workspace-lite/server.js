@@ -1,0 +1,620 @@
+// Integral Workspace Lite — a small, self-hosted workspace for a startup team.
+// One process, one SQLite file, no npm dependencies:  node server.js
+import http from "node:http";
+import { createHash, randomBytes } from "node:crypto";
+import { createReadStream, existsSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { DATA_DIR, all, db, get, getSetting, logActivity, run, setSetting } from "./db.js";
+import { hashPassword, passwordProblem, verifyPassword } from "./passwords.js";
+
+const ROOT = path.dirname(fileURLToPath(import.meta.url));
+const PUBLIC = path.join(ROOT, "public");
+const PORT = Number(process.env.PORT || 3000);
+const HOST = process.env.HOST || "0.0.0.0";
+const SECURE_COOKIE = process.env.COOKIE_SECURE === "true";
+const SESSION_DAYS = 14;
+const MAX_UPLOAD = 20 * 1024 * 1024;
+
+// ─────────────────────────── Helpers ───────────────────────────
+class HttpError extends Error {
+  constructor(status, message, fields) {
+    super(message);
+    this.status = status;
+    this.fields = fields;
+  }
+}
+const sha256 = (s) => createHash("sha256").update(s).digest("hex");
+
+function send(res, status, body, headers = {}) {
+  const data = body === undefined ? "" : JSON.stringify(body);
+  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", ...headers });
+  res.end(data);
+}
+async function readBody(req, limit = 1024 * 1024) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > limit) throw new HttpError(413, "That's too large.");
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
+}
+async function readJson(req) {
+  const raw = await readBody(req);
+  if (!raw.length) return {};
+  try {
+    return JSON.parse(raw.toString("utf8"));
+  } catch {
+    throw new HttpError(400, "Invalid request.");
+  }
+}
+function parseCookies(req) {
+  return Object.fromEntries(
+    (req.headers.cookie || "")
+      .split(";")
+      .map((c) => c.trim().split("="))
+      .filter(([k]) => k)
+      .map(([k, ...v]) => [k, decodeURIComponent(v.join("="))]),
+  );
+}
+
+// ─────────────────────────── Sessions & roles ───────────────────────────
+const ROLE_RANK = { member: 1, manager: 2, admin: 3 };
+const atLeast = (user, role) => ROLE_RANK[user.role] >= ROLE_RANK[role];
+
+function createSession(res, userId) {
+  const token = randomBytes(32).toString("base64url");
+  const expires = new Date(Date.now() + SESSION_DAYS * 86400000);
+  run("INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)", sha256(token), userId, expires.toISOString());
+  res.setHeader("Set-Cookie", `ws_session=${token}; Path=/; HttpOnly; SameSite=Lax; Expires=${expires.toUTCString()}${SECURE_COOKIE ? "; Secure" : ""}`);
+}
+function currentUser(req) {
+  const token = parseCookies(req).ws_session;
+  if (!token) return null;
+  const row = get(
+    `SELECT u.id, u.name, u.email, u.role, u.job_title, u.active, s.expires_at FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?`,
+    sha256(token),
+  );
+  if (!row || !row.active || new Date(row.expires_at) < new Date()) return null;
+  return { id: row.id, name: row.name, email: row.email, role: row.role, job_title: row.job_title };
+}
+
+const DUMMY_HASH = await hashPassword(randomBytes(12).toString("hex"));
+
+// Sign-in throttle: 5 failures per email or 20 per IP in 15 minutes.
+const failures = new Map();
+function throttled(keys) {
+  const now = Date.now();
+  return keys.some((k) => (failures.get(k) || []).filter((t) => now - t < 15 * 60000).length >= (k.startsWith("ip:") ? 20 : 5));
+}
+function recordFailure(keys) {
+  for (const k of keys) failures.set(k, [...(failures.get(k) || []).filter((t) => Date.now() - t < 15 * 60000), Date.now()]);
+}
+
+// ─────────────────────────── Validation ───────────────────────────
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+function validDate(s) {
+  if (!DATE_RE.test(s)) return false;
+  const d = new Date(`${s}T00:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
+}
+/** Cleans input against a field spec. Returns only known fields; throws 422 with per-field messages. */
+function validate(spec, input, { partial = false } = {}) {
+  const out = {};
+  const errors = {};
+  for (const [name, f] of Object.entries(spec)) {
+    const present = Object.prototype.hasOwnProperty.call(input, name);
+    if (!present) {
+      if (!partial && f.required) errors[name] = "Required.";
+      continue;
+    }
+    let v = input[name];
+    if (v === "" || v === undefined) v = null;
+    if (v === null) {
+      if (f.required) errors[name] = "Required.";
+      else out[name] = null;
+      continue;
+    }
+    switch (f.type) {
+      case "text":
+        v = String(v).trim();
+        if (f.required && !v) errors[name] = "Required.";
+        else if (v.length > (f.max || 500)) errors[name] = `Keep it under ${f.max || 500} characters.`;
+        break;
+      case "enum":
+        if (!f.values.includes(v)) errors[name] = "Choose one of the options.";
+        break;
+      case "date":
+        if (!validDate(String(v))) errors[name] = "Enter a valid date.";
+        break;
+      case "money":
+        v = Number(v);
+        if (!Number.isFinite(v) || v < 0 || v > 1e10) errors[name] = "Enter a valid amount.";
+        else v = Math.round(v * 100) / 100;
+        if (f.positive && v <= 0) errors[name] = "Must be more than zero.";
+        break;
+      case "int":
+        v = Number(v);
+        if (!Number.isInteger(v) || v < 0) errors[name] = "Enter a whole number.";
+        break;
+      case "user":
+        v = Number(v);
+        if (!get("SELECT id FROM users WHERE id = ? AND active = 1", v)) errors[name] = "Choose an active team member.";
+        break;
+      case "bool":
+        v = v ? 1 : 0;
+        break;
+      case "email":
+        v = String(v).trim().toLowerCase();
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v) || v.length > 200) errors[name] = "Enter a valid email address.";
+        break;
+      default:
+        break;
+    }
+    out[name] = v;
+  }
+  if (Object.keys(errors).length) throw new HttpError(422, "Please correct the highlighted fields.", errors);
+  return out;
+}
+
+// ─────────────────────────── Resources (simple CRUD with permission rules) ───────────────────────────
+const RESOURCES = {
+  tasks: {
+    label: (r) => `task “${r.title}”`,
+    fields: {
+      title: { type: "text", required: true, max: 200 },
+      notes: { type: "text", max: 5000 },
+      status: { type: "enum", values: ["todo", "doing", "done"] },
+      priority: { type: "enum", values: ["low", "medium", "high"] },
+      due_date: { type: "date" },
+      assignee_id: { type: "user" },
+      meeting_id: { type: "int" },
+      lead_id: { type: "int" },
+    },
+    list: () => all("SELECT * FROM tasks ORDER BY CASE status WHEN 'done' THEN 1 ELSE 0 END, due_date IS NULL, due_date, id DESC"),
+    beforeCreate: (data, user) => ({ ...data, created_by: user.id, assignee_id: data.assignee_id ?? user.id }),
+    beforeUpdate: (data, row) => ("status" in data ? { ...data, completed_at: data.status === "done" ? row.completed_at || new Date().toISOString() : null } : data),
+    canEdit: (user, row) => atLeast(user, "manager") || row.created_by === user.id || row.assignee_id === user.id,
+    canDelete: (user, row) => atLeast(user, "manager") || row.created_by === user.id,
+  },
+  leads: {
+    label: (r) => `school ${r.school}`,
+    fields: {
+      school: { type: "text", required: true, max: 200 },
+      contact_name: { type: "text", max: 120 },
+      contact_email: { type: "email" },
+      contact_phone: { type: "text", max: 40 },
+      city: { type: "text", max: 80 },
+      stage: { type: "enum", values: ["lead", "contacted", "meeting", "proposal", "won", "lost"] },
+      value: { type: "money" },
+      learners: { type: "int" },
+      next_follow_up: { type: "date" },
+      owner_id: { type: "user" },
+    },
+    list: () => all("SELECT * FROM leads ORDER BY school"),
+    beforeCreate: (data, user) => ({ ...data, owner_id: data.owner_id ?? user.id }),
+    canEdit: () => true,
+    canDelete: (user) => atLeast(user, "manager"),
+  },
+  content: {
+    label: (r) => `content “${r.title}”`,
+    fields: {
+      title: { type: "text", required: true, max: 200 },
+      type: { type: "enum", values: ["video", "lesson", "worksheet", "quiz", "past_paper"] },
+      topic: { type: "text", max: 120 },
+      stage: { type: "enum", values: ["idea", "recording", "editing", "review", "published"] },
+      owner_id: { type: "user" },
+      due_date: { type: "date" },
+    },
+    list: () => all("SELECT * FROM content ORDER BY due_date IS NULL, due_date, id DESC"),
+    beforeCreate: (data, user) => ({ ...data, owner_id: data.owner_id ?? user.id }),
+    // Only managers publish: members can move their work up to Review.
+    beforeUpdate: (data, row, user) => {
+      if (data.stage === "published" && !atLeast(user, "manager")) throw new HttpError(403, "Only a manager can mark content as published.");
+      return data;
+    },
+    canEdit: () => true,
+    canDelete: (user) => atLeast(user, "manager"),
+  },
+  transactions: {
+    label: (r) => `${r.kind} of R${Number(r.amount).toLocaleString("en-ZA")} (${r.description})`,
+    fields: {
+      kind: { type: "enum", values: ["income", "expense"], required: true },
+      date: { type: "date", required: true },
+      amount: { type: "money", required: true, positive: true },
+      category: { type: "text", required: true, max: 60 },
+      description: { type: "text", required: true, max: 200 },
+      counterparty: { type: "text", max: 120 },
+    },
+    audience: "manager",
+    canRead: (user) => atLeast(user, "manager"),
+    list: () => all("SELECT * FROM transactions ORDER BY date DESC, id DESC"),
+    beforeCreate: (data, user) => ({ ...data, created_by: user.id }),
+    canCreate: (user) => atLeast(user, "manager"),
+    canEdit: (user) => atLeast(user, "manager"),
+    canDelete: (user) => atLeast(user, "manager"),
+  },
+  meetings: {
+    label: (r) => `meeting “${r.title}”`,
+    fields: {
+      title: { type: "text", required: true, max: 200 },
+      date: { type: "date", required: true },
+      attendees: { type: "text", max: 500 },
+      notes: { type: "text", max: 20000 },
+      decisions: { type: "text", max: 5000 },
+    },
+    list: () => all("SELECT * FROM meetings ORDER BY date DESC, id DESC"),
+    beforeCreate: (data, user) => ({ ...data, created_by: user.id }),
+    canEdit: () => true,
+    canDelete: (user, row) => atLeast(user, "manager") || row.created_by === user.id,
+  },
+  approvals: {
+    label: (r) => `approval request “${r.title}”`,
+    audience: "manager",
+    fields: {
+      title: { type: "text", required: true, max: 200 },
+      details: { type: "text", max: 5000 },
+      amount: { type: "money" },
+    },
+    // Managers see everything; members see their own requests.
+    list: (user) =>
+      atLeast(user, "manager")
+        ? all("SELECT * FROM approvals ORDER BY CASE status WHEN 'pending' THEN 0 ELSE 1 END, id DESC")
+        : all("SELECT * FROM approvals WHERE requested_by = ? ORDER BY id DESC", user.id),
+    beforeCreate: (data, user) => ({ ...data, requested_by: user.id }),
+    canEdit: (user, row) => row.requested_by === user.id && row.status === "pending",
+    canDelete: (user, row) => (row.requested_by === user.id && row.status === "pending") || atLeast(user, "admin"),
+  },
+};
+
+function insert(table, data) {
+  const keys = Object.keys(data);
+  const info = run(`INSERT INTO ${table} (${keys.join(", ")}) VALUES (${keys.map(() => "?").join(", ")})`, ...keys.map((k) => data[k]));
+  return get(`SELECT * FROM ${table} WHERE id = ?`, Number(info.lastInsertRowid));
+}
+function update(table, id, data) {
+  const keys = Object.keys(data);
+  if (keys.length) run(`UPDATE ${table} SET ${keys.map((k) => `${k} = ?`).join(", ")} WHERE id = ?`, ...keys.map((k) => data[k]), id);
+  return get(`SELECT * FROM ${table} WHERE id = ?`, id);
+}
+
+// ─────────────────────────── Finance & dashboard ───────────────────────────
+const monthKey = (d) => d.toISOString().slice(0, 7);
+function lastMonths(n) {
+  const out = [];
+  const now = new Date();
+  for (let i = n - 1; i >= 0; i--) out.push(monthKey(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1))));
+  return out;
+}
+function financeSummary(months = 12) {
+  const keys = lastMonths(months);
+  const rows = all("SELECT substr(date, 1, 7) AS m, kind, SUM(amount) AS total FROM transactions WHERE date >= ? GROUP BY m, kind", `${keys[0]}-01`);
+  const series = keys.map((m) => {
+    const income = rows.find((r) => r.m === m && r.kind === "income")?.total || 0;
+    const expense = rows.find((r) => r.m === m && r.kind === "expense")?.total || 0;
+    return { month: m, income, expense, net: income - expense };
+  });
+  const opening = Number(getSetting("opening_balance", "0"));
+  const totals = get("SELECT COALESCE(SUM(CASE kind WHEN 'income' THEN amount ELSE 0 END),0) AS income, COALESCE(SUM(CASE kind WHEN 'expense' THEN amount ELSE 0 END),0) AS expense FROM transactions");
+  const cash = opening + totals.income - totals.expense;
+  const recent = series.slice(-4, -1); // last three complete months
+  const avgBurn = recent.length ? recent.reduce((s, m) => s + (m.expense - m.income), 0) / recent.length : 0;
+  const thisMonth = series.at(-1), lastMonth = series.at(-2);
+  const categories = all(
+    "SELECT category, SUM(amount) AS total FROM transactions WHERE kind = 'expense' AND date >= ? GROUP BY category ORDER BY total DESC",
+    `${keys.at(-3)}-01`,
+  );
+  return {
+    series,
+    cash,
+    openingBalance: opening,
+    avgMonthlyBurn: avgBurn,
+    runwayMonths: avgBurn > 0 ? Math.max(0, cash) / avgBurn : null,
+    thisMonth,
+    lastMonth,
+    expenseCategories: categories,
+  };
+}
+function dashboard(user) {
+  const today = new Date().toISOString().slice(0, 10);
+  const manager = atLeast(user, "manager");
+  return {
+    company: getSetting("company_name", "Integral Academy"),
+    finance: manager ? financeSummary(12) : null,
+    myTasks: all("SELECT * FROM tasks WHERE assignee_id = ? AND status <> 'done' ORDER BY due_date IS NULL, due_date LIMIT 8", user.id),
+    overdueTasks: all("SELECT * FROM tasks WHERE status <> 'done' AND due_date < ? ORDER BY due_date LIMIT 8", today),
+    openTasks: get("SELECT COUNT(*) AS n FROM tasks WHERE status <> 'done'").n,
+    pendingApprovals: manager ? all("SELECT * FROM approvals WHERE status = 'pending' ORDER BY id DESC LIMIT 6") : all("SELECT * FROM approvals WHERE status = 'pending' AND requested_by = ? ORDER BY id DESC", user.id),
+    pipeline: all("SELECT stage, COUNT(*) AS n, COALESCE(SUM(value),0) AS value FROM leads GROUP BY stage"),
+    followUps: all("SELECT * FROM leads WHERE next_follow_up IS NOT NULL AND next_follow_up <= date(?, '+7 days') AND stage NOT IN ('won','lost') ORDER BY next_follow_up LIMIT 8", today),
+    content: all("SELECT stage, COUNT(*) AS n FROM content GROUP BY stage"),
+    learnersSigned: get("SELECT COALESCE(SUM(learners),0) AS n FROM leads WHERE stage = 'won'").n,
+    upcomingMeetings: all("SELECT * FROM meetings WHERE date >= ? ORDER BY date LIMIT 5", today),
+    activity: all(`SELECT a.summary, a.created_at, u.name AS user_name FROM activity a LEFT JOIN users u ON u.id = a.user_id ${manager ? "" : "WHERE a.audience = 'all'"} ORDER BY a.id DESC LIMIT 12`),
+  };
+}
+
+// ─────────────────────────── Documents ───────────────────────────
+const DOC_TYPES = {
+  ".pdf": "application/pdf", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".txt": "text/plain", ".csv": "text/csv",
+  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+};
+const canSeeDoc = (user, d) => !d.private || d.uploaded_by === user.id || atLeast(user, "manager");
+
+// ─────────────────────────── API router ───────────────────────────
+async function api(req, res, url) {
+  const method = req.method;
+  const parts = url.pathname.replace(/^\/api\//, "").split("/").filter(Boolean);
+  // Mutations must come from our own page: a custom header can't be sent cross-site without CORS.
+  if (method !== "GET" && req.headers["x-requested-with"] !== "workspace") throw new HttpError(403, "Request blocked.");
+
+  // ── Auth ──
+  if (parts[0] === "auth") {
+    const userCount = get("SELECT COUNT(*) AS n FROM users").n;
+    if (parts[1] === "status" && method === "GET") {
+      return send(res, 200, { setupRequired: userCount === 0, user: currentUser(req), company: getSetting("company_name", "Integral Academy") });
+    }
+    if (parts[1] === "setup" && method === "POST") {
+      if (userCount > 0) throw new HttpError(409, "The workspace is already set up.");
+      const body = await readJson(req);
+      const data = validate({ name: { type: "text", required: true, max: 120 }, email: { type: "email", required: true }, company: { type: "text", max: 120 } }, body);
+      const problem = passwordProblem(body.password);
+      if (problem) throw new HttpError(422, problem, { password: problem });
+      const info = run("INSERT INTO users (name, email, password_hash, role, job_title) VALUES (?, ?, ?, 'admin', 'Founder')", data.name, data.email, await hashPassword(body.password));
+      if (data.company) setSetting("company_name", data.company);
+      logActivity(Number(info.lastInsertRowid), `${data.name} set up the workspace`);
+      createSession(res, Number(info.lastInsertRowid));
+      return send(res, 201, { ok: true });
+    }
+    if (parts[1] === "login" && method === "POST") {
+      const body = await readJson(req);
+      const email = String(body.email || "").trim().toLowerCase();
+      const keys = [`ip:${req.socket.remoteAddress}`, `email:${email}`];
+      if (throttled(keys)) throw new HttpError(429, "Too many sign-in attempts. Wait 15 minutes and try again.");
+      const user = get("SELECT * FROM users WHERE email = ?", email);
+      // Always run one hash so a wrong email takes as long as a wrong password.
+      const passwordOk = await verifyPassword(String(body.password || ""), user ? user.password_hash : DUMMY_HASH);
+      const ok = user && user.active && passwordOk;
+      if (!ok) {
+        recordFailure(keys);
+        throw new HttpError(401, "Invalid email or password.");
+      }
+      createSession(res, user.id);
+      return send(res, 200, { ok: true });
+    }
+    if (parts[1] === "logout" && method === "POST") {
+      const token = parseCookies(req).ws_session;
+      if (token) run("DELETE FROM sessions WHERE token_hash = ?", sha256(token));
+      res.setHeader("Set-Cookie", "ws_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0");
+      return send(res, 200, { ok: true });
+    }
+  }
+
+  const user = currentUser(req);
+  if (!user) throw new HttpError(401, "Please sign in.");
+
+  if (parts[0] === "auth" && parts[1] === "password" && method === "POST") {
+    const body = await readJson(req);
+    const row = get("SELECT password_hash FROM users WHERE id = ?", user.id);
+    if (!(await verifyPassword(String(body.current || ""), row.password_hash))) throw new HttpError(422, "Your current password is incorrect.", { current: "Incorrect password." });
+    const problem = passwordProblem(body.next);
+    if (problem) throw new HttpError(422, problem, { next: problem });
+    run("UPDATE users SET password_hash = ? WHERE id = ?", await hashPassword(body.next), user.id);
+    const token = sha256(parseCookies(req).ws_session || "");
+    run("DELETE FROM sessions WHERE user_id = ? AND token_hash <> ?", user.id, token);
+    return send(res, 200, { ok: true });
+  }
+
+  if (parts[0] === "dashboard" && method === "GET") return send(res, 200, dashboard(user));
+  if (parts[0] === "finance" && parts[1] === "summary" && method === "GET") {
+    if (!atLeast(user, "manager")) throw new HttpError(403, "Finance is for managers.");
+    return send(res, 200, financeSummary(Math.min(24, Math.max(3, Number(url.searchParams.get("months")) || 12))));
+  }
+
+  // ── Team (everyone can list names; admins manage) ──
+  if (parts[0] === "users") {
+    if (method === "GET") {
+      return send(res, 200, all("SELECT id, name, email, role, job_title, active, created_at FROM users ORDER BY active DESC, name"));
+    }
+    if (!atLeast(user, "admin")) throw new HttpError(403, "Only an admin can manage the team.");
+    const spec = { name: { type: "text", required: true, max: 120 }, email: { type: "email", required: true }, role: { type: "enum", values: ["admin", "manager", "member"], required: true }, job_title: { type: "text", max: 120 }, active: { type: "bool" } };
+    if (method === "POST" && !parts[1]) {
+      const body = await readJson(req);
+      const data = validate(spec, body);
+      const problem = passwordProblem(body.password);
+      if (problem) throw new HttpError(422, problem, { password: problem });
+      if (get("SELECT id FROM users WHERE email = ?", data.email)) throw new HttpError(422, "That email is already in use.", { email: "Already in use." });
+      const created = insert("users", { ...data, active: data.active ?? 1, password_hash: await hashPassword(body.password) });
+      logActivity(user.id, `${user.name} added ${created.name} to the team`);
+      return send(res, 201, { id: created.id });
+    }
+    const id = Number(parts[1]);
+    const target = get("SELECT * FROM users WHERE id = ?", id);
+    if (!target) throw new HttpError(404, "Not found.");
+    if (method === "PATCH") {
+      const body = await readJson(req);
+      const data = validate(spec, body, { partial: true });
+      if (id === user.id && (data.active === 0 || (data.role && data.role !== "admin"))) throw new HttpError(422, "You can't deactivate or demote yourself.");
+      const otherAdmins = get("SELECT COUNT(*) AS n FROM users WHERE role = 'admin' AND active = 1 AND id <> ?", id).n;
+      if (target.role === "admin" && (data.active === 0 || (data.role && data.role !== "admin")) && otherAdmins === 0) throw new HttpError(422, "The workspace needs at least one active admin.");
+      if (body.password) {
+        const problem = passwordProblem(body.password);
+        if (problem) throw new HttpError(422, problem, { password: problem });
+        data.password_hash = await hashPassword(body.password);
+      }
+      update("users", id, data);
+      if (data.active === 0 || data.password_hash) run("DELETE FROM sessions WHERE user_id = ?", id);
+      logActivity(user.id, `${user.name} updated ${target.name}'s account`);
+      return send(res, 200, { ok: true });
+    }
+  }
+
+  // ── Settings (admin) ──
+  if (parts[0] === "settings") {
+    if (method === "GET") return send(res, 200, { company_name: getSetting("company_name", "Integral Academy"), opening_balance: Number(getSetting("opening_balance", "0")), opening_date: getSetting("opening_date", "") });
+    if (method === "PUT") {
+      if (!atLeast(user, "admin")) throw new HttpError(403, "Only an admin can change settings.");
+      const data = validate({ company_name: { type: "text", max: 120 }, opening_balance: { type: "money" }, opening_date: { type: "date" } }, await readJson(req), { partial: true });
+      for (const [k, v] of Object.entries(data)) setSetting(k, v ?? "");
+      logActivity(user.id, `${user.name} updated workspace settings`);
+      return send(res, 200, { ok: true });
+    }
+  }
+
+  // ── Approvals decision ──
+  if (parts[0] === "approvals" && parts[2] === "decide" && method === "POST") {
+    if (!atLeast(user, "manager")) throw new HttpError(403, "Only managers can decide approvals.");
+    const row = get("SELECT * FROM approvals WHERE id = ?", Number(parts[1]));
+    if (!row) throw new HttpError(404, "Not found.");
+    if (row.requested_by === user.id) throw new HttpError(403, "You can't approve your own request.");
+    if (row.status !== "pending") throw new HttpError(409, "This request has already been decided.");
+    const body = validate({ decision: { type: "enum", values: ["approved", "rejected"], required: true }, note: { type: "text", max: 1000 } }, await readJson(req));
+    update("approvals", row.id, { status: body.decision, decided_by: user.id, decision_note: body.note ?? null, decided_at: new Date().toISOString() });
+    logActivity(user.id, `${user.name} ${body.decision} “${row.title}”`, "manager");
+    return send(res, 200, { ok: true });
+  }
+
+  // ── Lead notes ──
+  if (parts[0] === "leads" && parts[2] === "notes") {
+    const lead = get("SELECT * FROM leads WHERE id = ?", Number(parts[1]));
+    if (!lead) throw new HttpError(404, "Not found.");
+    if (method === "GET") return send(res, 200, all("SELECT n.*, u.name AS author_name FROM lead_notes n LEFT JOIN users u ON u.id = n.author_id WHERE lead_id = ? ORDER BY n.id DESC", lead.id));
+    if (method === "POST") {
+      const data = validate({ body: { type: "text", required: true, max: 5000 } }, await readJson(req));
+      insert("lead_notes", { lead_id: lead.id, body: data.body, author_id: user.id });
+      logActivity(user.id, `${user.name} added a note on ${lead.school}`);
+      return send(res, 201, { ok: true });
+    }
+  }
+
+  // ── Documents ──
+  if (parts[0] === "documents") {
+    if (method === "GET" && !parts[1]) {
+      return send(res, 200, all("SELECT d.*, u.name AS uploader_name FROM documents d LEFT JOIN users u ON u.id = d.uploaded_by ORDER BY d.id DESC").filter((d) => canSeeDoc(user, d)));
+    }
+    if (method === "POST" && !parts[1]) {
+      const fileName = decodeURIComponent(String(req.headers["x-file-name"] || "")).replace(/[^\w.\- ()]/g, "_").slice(0, 150);
+      const ext = path.extname(fileName).toLowerCase();
+      if (!DOC_TYPES[ext]) throw new HttpError(422, "Upload a PDF, image, Word, Excel, PowerPoint, CSV or text file.");
+      const meta = validate({ title: { type: "text", required: true, max: 200 }, folder: { type: "text", max: 60 } }, { title: decodeURIComponent(String(req.headers["x-title"] || "")), folder: decodeURIComponent(String(req.headers["x-folder"] || "")) || "General" });
+      const data = await readBody(req, MAX_UPLOAD);
+      if (!data.length) throw new HttpError(422, "The file is empty.");
+      const key = `${Date.now()}-${randomBytes(8).toString("hex")}${ext}`;
+      writeFileSync(path.join(DATA_DIR, "uploads", key), data, { flag: "wx", mode: 0o600 });
+      const doc = insert("documents", { title: meta.title, folder: meta.folder || "General", file_name: fileName, mime_type: DOC_TYPES[ext], size: data.length, storage_key: key, private: req.headers["x-private"] === "1" ? 1 : 0, uploaded_by: user.id });
+      logActivity(user.id, `${user.name} uploaded “${doc.title}”`, doc.private ? "manager" : "all");
+      return send(res, 201, { id: doc.id });
+    }
+    const doc = get("SELECT * FROM documents WHERE id = ?", Number(parts[1]));
+    if (!doc || !canSeeDoc(user, doc)) throw new HttpError(404, "Not found.");
+    if (method === "GET" && parts[2] === "file") {
+      const file = path.join(DATA_DIR, "uploads", doc.storage_key);
+      if (!existsSync(file)) throw new HttpError(404, "The file is missing.");
+      const inline = url.searchParams.get("inline") === "1" && /^(application\/pdf|image\/)/.test(doc.mime_type);
+      res.writeHead(200, {
+        "Content-Type": doc.mime_type,
+        "Content-Length": statSync(file).size,
+        "Content-Disposition": `${inline ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(doc.file_name)}`,
+        "X-Content-Type-Options": "nosniff",
+        "Cache-Control": "private, no-store",
+      });
+      return createReadStream(file).pipe(res);
+    }
+    if (method === "DELETE") {
+      if (!(doc.uploaded_by === user.id || atLeast(user, "manager"))) throw new HttpError(403, "Only the uploader or a manager can delete this.");
+      run("DELETE FROM documents WHERE id = ?", doc.id);
+      try {
+        unlinkSync(path.join(DATA_DIR, "uploads", doc.storage_key));
+      } catch {
+        /* already gone */
+      }
+      logActivity(user.id, `${user.name} deleted “${doc.title}”`, doc.private ? "manager" : "all");
+      return send(res, 200, { ok: true });
+    }
+  }
+
+  // ── Generic resources ──
+  const resource = RESOURCES[parts[0]];
+  if (resource) {
+    const table = parts[0];
+    if (resource.canRead && !resource.canRead(user)) throw new HttpError(403, "You don't have access to this.");
+    if (method === "GET" && !parts[1]) return send(res, 200, resource.list(user));
+    if (method === "POST" && !parts[1]) {
+      if (resource.canCreate && !resource.canCreate(user)) throw new HttpError(403, "You don't have access to this.");
+      let data = validate(resource.fields, await readJson(req));
+      if (resource.beforeCreate) data = resource.beforeCreate(data, user);
+      const row = insert(table, data);
+      logActivity(user.id, `${user.name} added ${resource.label(row)}`, resource.audience);
+      return send(res, 201, row);
+    }
+    const row = get(`SELECT * FROM ${table} WHERE id = ?`, Number(parts[1]));
+    if (!row) throw new HttpError(404, "Not found.");
+    if (table === "approvals" && !atLeast(user, "manager") && row.requested_by !== user.id) throw new HttpError(404, "Not found.");
+    if (method === "GET") return send(res, 200, row);
+    if (method === "PATCH") {
+      if (!resource.canEdit(user, row)) throw new HttpError(403, "You can't change this.");
+      let data = validate(resource.fields, await readJson(req), { partial: true });
+      if (resource.beforeUpdate) data = resource.beforeUpdate(data, row, user);
+      const updated = update(table, row.id, data);
+      logActivity(user.id, `${user.name} updated ${resource.label(updated)}`, resource.audience);
+      return send(res, 200, updated);
+    }
+    if (method === "DELETE") {
+      if (!resource.canDelete(user, row)) throw new HttpError(403, "You can't delete this.");
+      run(`DELETE FROM ${table} WHERE id = ?`, row.id);
+      logActivity(user.id, `${user.name} deleted ${resource.label(row)}`, resource.audience);
+      return send(res, 200, { ok: true });
+    }
+  }
+  throw new HttpError(404, "Not found.");
+}
+
+// ─────────────────────────── Static files ───────────────────────────
+const STATIC_TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".png": "image/png", ".svg": "image/svg+xml", ".ico": "image/x-icon" };
+const SECURITY_HEADERS = {
+  "Content-Security-Policy": "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'",
+  "X-Content-Type-Options": "nosniff",
+  "Referrer-Policy": "same-origin",
+  "X-Frame-Options": "SAMEORIGIN",
+};
+function serveStatic(req, res, url) {
+  let file;
+  try {
+    file = path.normalize(path.join(PUBLIC, decodeURIComponent(url.pathname)));
+  } catch {
+    return send(res, 400, { error: "Bad request." });
+  }
+  if (file !== PUBLIC && !file.startsWith(PUBLIC + path.sep)) return send(res, 404, { error: "Not found." });
+  if (!existsSync(file) || statSync(file).isDirectory()) file = path.join(PUBLIC, "index.html");
+  res.writeHead(200, { "Content-Type": STATIC_TYPES[path.extname(file)] || "application/octet-stream", "Cache-Control": file.endsWith("index.html") ? "no-cache" : "public, max-age=3600", ...SECURITY_HEADERS });
+  res.end(readFileSync(file));
+}
+
+const server = http.createServer(async (req, res) => {
+  const url = new URL(req.url, "http://localhost");
+  try {
+    if (url.pathname === "/health") return send(res, 200, { status: "ok" });
+    if (url.pathname.startsWith("/api/")) return await api(req, res, url);
+    return serveStatic(req, res, url);
+  } catch (error) {
+    if (error instanceof HttpError) return send(res, error.status, { error: error.message, fields: error.fields });
+    if (String(error?.message).includes("FOREIGN KEY")) return send(res, 422, { error: "A linked record is missing." });
+    console.error(error);
+    return send(res, 500, { error: "Something went wrong. Please try again." });
+  }
+});
+
+// Expired sessions are cleared hourly.
+setInterval(() => run("DELETE FROM sessions WHERE expires_at < ?", new Date().toISOString()), 3600000).unref();
+
+server.listen(PORT, HOST, () => {
+  console.log(`Integral Workspace Lite is running on http://localhost:${PORT}`);
+  if (HOST === "0.0.0.0") console.log("Others on your network can use http://<this-computer's-IP>:" + PORT);
+  if (get("SELECT COUNT(*) AS n FROM users").n === 0) console.log("Open it in a browser to create the first admin account.");
+});
+
+export { db };

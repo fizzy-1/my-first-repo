@@ -7,6 +7,10 @@ documents, approvals, meetings and strategy.
 
 > _Summing knowledge. Shaping futures._
 
+> **Small team? Start with [Workspace Lite](workspace-lite/README.md).** It's a lighter version
+> that runs on one office computer with only Node.js installed: no database server, no cloud,
+> and one folder to back up. This full app suits a larger organisation later on.
+
 This is an internal tool. It is not the learner platform; it **reads** learner data through
 a narrow integration layer (see [Learner platform integration](#learner-platform-integration)).
 
