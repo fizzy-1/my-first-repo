@@ -60,6 +60,26 @@
     };
   }
 
+  // ─────────────────────────── Invoices ───────────────────────────
+  /** draft · sent · overdue (sent and past its due date) · paid · void */
+  const invoiceState = (inv, today) => (inv.status === "sent" && inv.due_date < today ? "overdue" : inv.status);
+  function invoiceSummary(invoices, today) {
+    const open = invoices.filter((i) => i.status === "sent");
+    const overdue = open.filter((i) => i.due_date < today);
+    const monthStartDay = `${today.slice(0, 7)}-01`;
+    return {
+      owed: sumBy(open, (i) => i.amount), owedCount: open.length,
+      overdue: sumBy(overdue, (i) => i.amount), overdueCount: overdue.length,
+      paidThisMonth: sumBy(invoices.filter((i) => i.status === "paid" && i.paid_date >= monthStartDay && i.paid_date <= today), (i) => i.amount),
+      drafts: invoices.filter((i) => i.status === "draft").length,
+    };
+  }
+  /** INV-0001, INV-0002, … one more than the highest number used so far. */
+  function nextInvoiceNumber(invoices) {
+    const max = invoices.reduce((m, i) => Math.max(m, Number(String(i.number || "").replace(/\D/g, "")) || 0), 0);
+    return `INV-${String(max + 1).padStart(4, "0")}`;
+  }
+
   // ─────────────────────────── Goals ───────────────────────────
   const GOAL_METRICS = {
     manual: { label: "Updated by hand", unit: "number", cumulative: false },
@@ -218,7 +238,7 @@
 
   const api = {
     isoDay, addDays, addMonths, lastDay, monthsBack, daysBetween,
-    contractState, arrOn, schoolsOn, learnersOn, renewalSummary,
+    contractState, arrOn, schoolsOn, learnersOn, renewalSummary, invoiceState, invoiceSummary, nextInvoiceNumber,
     GOAL_METRICS, goalProgress, budgetVsActual, forecast, statsMatrix, teamMatrix,
   };
   if (typeof window !== "undefined") window.WSMetrics = api;

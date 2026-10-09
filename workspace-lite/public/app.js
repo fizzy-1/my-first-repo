@@ -81,6 +81,10 @@
       on_track: { label: "On track", tone: "success" }, at_risk: { label: "At risk", tone: "warning" }, behind: { label: "Behind", tone: "danger" },
       achieved: { label: "Achieved", tone: "primary" }, missed: { label: "Missed", tone: "danger" }, not_started: { label: "Not started", tone: "neutral" },
     },
+    invoiceState: {
+      draft: { label: "Draft", tone: "neutral" }, sent: { label: "Sent", tone: "info" }, overdue: { label: "Overdue", tone: "danger" },
+      paid: { label: "Paid", tone: "success" }, void: { label: "Void", tone: "neutral" },
+    },
     contractState: {
       active: { label: "Active", tone: "success" }, due: { label: "Renewal due", tone: "warning" }, lapsed: { label: "Ended, no decision", tone: "danger" },
       upcoming: { label: "Starts soon", tone: "info" }, not_renewing: { label: "Not renewing", tone: "neutral" }, renewed: { label: "Renewed", tone: "primary" }, ended: { label: "Ended", tone: "neutral" },
@@ -173,7 +177,7 @@
     return html`<${Modal} open=${open} onClose=${onClose} title=${title} description=${description} width=${width}
       footer=${html`${extraFooter}<span style=${{ flex: 1 }} /><${Button} onClick=${onClose}>Cancel<//><${Button} variant="primary" disabled=${busy} onClick=${submit}>${busy ? "Saving…" : submitLabel}<//>`}>
       <form class="form-grid" onSubmit=${submit} noValidate>
-        ${fields.filter((f) => !f.show || f.show(values)).map((f) => html`<${FormField} key=${f.name} f=${typeof f.hint === "function" ? { ...f, hint: f.hint(values) } : f} value=${values[f.name]} error=${errors[f.name]} onChange=${(v) => set(f.name, v)} />`)}
+        ${fields.filter((f) => !f.show || f.show(values)).map((f) => html`<${FormField} key=${f.name} f=${{ ...f, hint: typeof f.hint === "function" ? f.hint(values) : f.hint, options: typeof f.options === "function" ? f.options(values) : f.options }} value=${values[f.name]} error=${errors[f.name]} onChange=${(v) => set(f.name, v)} />`)}
         <button type="submit" hidden />
       </form>
       ${formError && html`<div role="alert" style=${{ padding: "8px 12px", borderRadius: 8, background: "var(--danger-soft)", color: "var(--danger)", fontSize: 13 }}>${formError}</div>`}
@@ -198,12 +202,12 @@
     }
     return html`<${Field} id=${id} label=${label} hint=${f.hint} error=${error} className=${f.full ? "full" : ""}>${control}<//>`;
   }
-  /** Small confirm dialog used before deletes. */
+  /** Small confirm dialog used before deletes (or another hard-to-undo step, named by `label`). */
   function useConfirm() {
     const [state, setState] = useState(null);
-    const confirm = (message, action) => setState({ message, action });
+    const confirm = (message, action, label = "Delete") => setState({ message, action, label });
     const dialog = html`<${Modal} open=${Boolean(state)} onClose=${() => setState(null)} title="Are you sure?" width=${420}
-      footer=${html`<${Button} onClick=${() => setState(null)}>Cancel<//><${Button} variant="danger" onClick=${async () => { const a = state.action; setState(null); await a(); }}>Delete<//>`}>
+      footer=${html`<${Button} onClick=${() => setState(null)}>Cancel<//><${Button} variant="danger" onClick=${async () => { const a = state.action; setState(null); await a(); }}>${state ? state.label : "Delete"}<//>`}>
       <p style=${{ margin: 0 }}>${state && state.message}</p>
     <//>`;
     return [confirm, dialog];
@@ -345,6 +349,12 @@
                 <${DaysLeft} c=${c} />
               </a>`)}
             <//>
+            ${d.invoices && html`<${Section} title="Unpaid invoices" description=${d.invoices.summary.owedCount ? `${fmt.zar(d.invoices.summary.owed)} owed${d.invoices.summary.overdueCount ? `, ${fmt.zar(d.invoices.summary.overdue)} overdue` : ""}` : "Nothing owed"} actions=${html`<a href="#/finance?tab=invoices" style=${{ fontSize: 13, color: "var(--primary)" }}>Invoices</a>`}>
+              ${d.invoices.open.length === 0 ? html`<${EmptyState} icon="receipt" title="All invoices are paid" />` : d.invoices.open.map((i) => html`<a class="list-row" key=${i.id} href=${`#/finance?tab=invoices&invoice=${i.id}`} style=${{ textDecoration: "none" }}>
+                <span style=${{ flex: 1, minWidth: 0 }}><strong style=${{ fontWeight: 500 }}>${i.school || i.number}</strong><br /><${Muted}>${i.number} · ${fmt.zar(i.amount)}<//></span>
+                <${DueDate} date=${i.due_date} />
+              </a>`)}
+            <//>`}
             <${Section} title="Content production" description="Lessons and videos by stage" actions=${html`<a href="#/content" style=${{ fontSize: 13, color: "var(--primary)" }}>Board</a>`}>
               ${d.content.length === 0 ? html`<${EmptyState} icon="video" title="No content planned yet" />` : html`<${BarList} items=${Object.keys(META.contentStage).map((k) => ({ label: META.contentStage[k].label, value: d.content.find((c) => c.stage === k)?.n || 0 }))} />`}
             <//>
@@ -830,6 +840,7 @@
       ${open && html`<${Modal} open=${true} onClose=${() => go("contracts")} title=${open.school} description=${`${fmt.date(open.start_date)} – ${fmt.date(open.end_date)}`} width=${560}
         footer=${html`${manager && html`<${Button} variant="ghost" icon="trash-2" style=${{ color: "var(--danger)" }} onClick=${() => confirm(`Delete this contract with ${open.school}? Use “Not renewing” instead if the school is leaving.`, async () => { await act(() => api("DELETE", `/api/contracts/${open.id}`), "Contract deleted"); go("contracts"); reload(); })}>Delete<//>`}
           <span style=${{ flex: 1 }} />
+          ${manager && html`<${Button} icon="receipt" onClick=${() => go(`finance?tab=invoices&contract=${open.id}`)}>Create invoice<//>`}
           ${manager && open.status === "active" && html`<${Button} onClick=${() => actions.end(open)}>Not renewing<//><${Button} icon="refresh-cw" onClick=${() => actions.renew(open)}>Renew<//>`}
           ${manager && html`<${Button} variant="primary" icon="pencil" onClick=${() => setEditing(open)}>Edit<//>`}`}>
         <div style=${{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10 }}><${StatusBadge} meta=${META.contractState} value=${open.state} /><${DaysLeft} c=${open} /></div>
@@ -1361,6 +1372,9 @@
   function FinanceView({ params }) {
     const { user, toast } = useApp();
     const [tab, setTab] = useState(params.tab || "overview");
+    useEffect(() => {
+      if (params.tab) setTab(params.tab);
+    }, [params.tab]);
     const [months, setMonths] = useState("12");
     const summary = useResource(`/api/finance/summary?months=${months}`);
     const tx = useResource("/api/transactions");
@@ -1420,8 +1434,8 @@
       <${PageHeader} title="Finance" description="Money in, money out, the plan, and how long the cash lasts." actions=${html`
         <${Button} icon="upload" onClick=${() => setImporting(true)}>Import statement<//>
         <${Button} variant="primary" icon="plus" onClick=${() => setEditing("new")}>Add transaction<//>`} />
-      <${Tabs} value=${tab} onChange=${setTab} items=${[{ id: "overview", label: "Overview" }, { id: "transactions", label: "Transactions", count: tx.data ? tx.data.length : undefined }, { id: "budget", label: "Budget" }, { id: "forecast", label: "Forecast" }]} />
-      ${tab === "overview" ? overview : tab === "transactions" ? transactions : tab === "budget" ? html`<${BudgetPanel} transactions=${tx.data} onChanged=${reload} />` : html`<${ForecastPanel} />`}
+      <${Tabs} value=${tab} onChange=${setTab} items=${[{ id: "overview", label: "Overview" }, { id: "transactions", label: "Transactions", count: tx.data ? tx.data.length : undefined }, { id: "invoices", label: "Invoices" }, { id: "budget", label: "Budget" }, { id: "forecast", label: "Forecast" }]} />
+      ${tab === "overview" ? overview : tab === "transactions" ? transactions : tab === "invoices" ? html`<${InvoicesPanel} params=${params} onChanged=${reload} />` : tab === "budget" ? html`<${BudgetPanel} transactions=${tx.data} onChanged=${reload} />` : html`<${ForecastPanel} />`}
       <${ImportModal} open=${importing} onClose=${() => setImporting(false)} onImported=${reload} />
       <datalist id="tx-categories">${[...new Set([...categories, "Salaries", "Software", "Marketing", "Equipment", "Rent", "Travel", "Subscriptions", "School contracts", "Grants"])].map((c) => html`<option key=${c} value=${c} />`)}</datalist>
       <${FormModal} open=${Boolean(editing)} onClose=${() => setEditing(null)} title=${item ? "Edit transaction" : "Add transaction"} fields=${TX_FIELDS} initial=${item || { date: today() }}
@@ -1433,6 +1447,185 @@
           setEditing(null);
           toast(item ? "Saved" : "Transaction added");
           reload();
+        }} />
+      ${confirmDialog}
+    <//>`;
+  }
+
+  // ─────────────────────────── Invoices ───────────────────────────
+  const escapeHtml = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+  const invoiceFields = (leads, contracts) => [
+    { name: "lead_id", label: "School", type: "select", required: true, full: true, placeholder: "Choose a school",
+      options: [...leads].sort((a, b) => (b.stage === "won") - (a.stage === "won") || a.school.localeCompare(b.school)).map((l) => ({ value: l.id, label: l.school })) },
+    { name: "contract_id", label: "For contract", type: "select", placeholder: "Not linked to a contract", full: true,
+      options: (v) => contracts.filter((c) => String(c.lead_id) === String(v.lead_id)).map((c) => ({ value: c.id, label: `${fmt.date(c.start_date)} – ${fmt.date(c.end_date)} · ${fmt.zar(c.annual_value)} a year` })) },
+    { name: "description", label: "Description", type: "text", required: true, full: true, placeholder: "e.g. Annual licence 2027 (150 learners)" },
+    { name: "amount", label: "Amount (R)", type: "money", required: true },
+    { name: "issue_date", label: "Invoice date", type: "date", required: true, default: today() },
+    { name: "due_date", label: "Due", type: "date", required: true, default: addDays(today(), 30) },
+    { name: "notes", label: "Notes on the invoice", type: "textarea", full: true, rows: 2 },
+  ];
+  /** A standalone, print-ready invoice page (light, A4-friendly) for printing or saving as a file. */
+  function invoiceHtml(inv, details, company) {
+    const lines = (text) => escapeHtml(text).replace(/\n/g, "<br>");
+    return `<!doctype html><html lang="en-ZA"><head><meta charset="utf-8"><title>${escapeHtml(inv.number)} · ${escapeHtml(company)}</title>
+<style>body{font:14px/1.5 -apple-system,"Segoe UI",Roboto,sans-serif;color:#1d2433;margin:0;padding:40px;max-width:780px}h1{font-size:28px;margin:0;letter-spacing:.06em}
+.top{display:flex;justify-content:space-between;gap:24px;border-bottom:2px solid #0b2545;padding-bottom:18px;margin-bottom:22px}.muted{color:#5b6475}table{width:100%;border-collapse:collapse;margin:20px 0}
+th,td{padding:10px 8px;border-bottom:1px solid #e3e1da;text-align:left}td.r,th.r{text-align:right}.total td{font-weight:700;font-size:16px;border-bottom:2px solid #0b2545}.grid{display:flex;gap:40px;flex-wrap:wrap}
+.stamp{display:inline-block;border:2px solid currentColor;padding:2px 10px;border-radius:6px;font-weight:700;letter-spacing:.1em}@media print{body{padding:0}}</style></head><body>
+<div class="top"><div><strong style="font-size:18px">${escapeHtml(company)}</strong><div class="muted">${lines(details.invoice_from)}</div>${details.vat_number ? `<div class="muted">VAT number: ${escapeHtml(details.vat_number)}</div>` : ""}</div>
+<div style="text-align:right"><h1>INVOICE</h1><div><strong>${escapeHtml(inv.number)}</strong></div><div class="muted">Date: ${escapeHtml(fmt.date(inv.issue_date))}<br>Due: ${escapeHtml(fmt.date(inv.due_date))}</div>
+${inv.state === "paid" ? `<div class="stamp" style="color:#15803d;margin-top:8px">PAID ${escapeHtml(fmt.date(inv.paid_date))}</div>` : inv.state === "void" ? `<div class="stamp" style="color:#6b7280;margin-top:8px">VOID</div>` : ""}</div></div>
+<div class="grid"><div><div class="muted">Bill to</div><strong>${escapeHtml(inv.school || "")}</strong><div>${escapeHtml(inv.contact_name || "")}</div><div class="muted">${escapeHtml(inv.city || "")}</div></div></div>
+<table><thead><tr><th>Description</th><th class="r">Amount</th></tr></thead><tbody><tr><td>${escapeHtml(inv.description)}</td><td class="r">${escapeHtml(fmt.zar(inv.amount))}</td></tr>
+<tr class="total"><td>Total due</td><td class="r">${escapeHtml(fmt.zar(inv.state === "paid" ? 0 : inv.amount))}</td></tr></tbody></table>
+${inv.notes ? `<p>${lines(inv.notes)}</p>` : ""}${details.invoice_bank ? `<div><div class="muted">Pay by EFT to</div>${lines(details.invoice_bank)}</div>` : ""}
+<p class="muted" style="margin-top:32px">Thank you for partnering with ${escapeHtml(company)}.</p></body></html>`;
+  }
+  /** The same invoice, drawn inside the app. */
+  function InvoicePaper({ inv, details, company }) {
+    const stamp = inv.state === "paid" ? ["Paid", "var(--success)"] : inv.state === "overdue" ? ["Overdue", "var(--danger)"] : inv.state === "void" ? ["Void", "var(--muted-fg)"] : null;
+    return html`<div style=${{ border: "1px solid var(--border)", borderRadius: 12, padding: "22px clamp(14px, 3vw, 28px)", background: "var(--card)", display: "grid", gap: 16 }}>
+      <div style=${{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", gap: 16, paddingBottom: 14, borderBottom: "2px solid var(--primary)" }}>
+        <div style=${{ display: "flex", gap: 12, minWidth: 0 }}>
+          <span class="crest" style=${{ width: 44, height: 44 }}><img src="crest.png" alt="" /></span>
+          <div style=${{ minWidth: 0 }}><strong>${company}</strong><div class="pre" style=${{ fontSize: 12.5, color: "var(--muted-fg)" }}>${details.invoice_from || "Add your address under Invoice details."}</div>${details.vat_number && html`<div style=${{ fontSize: 12.5, color: "var(--muted-fg)" }}>VAT number: ${details.vat_number}</div>`}</div>
+        </div>
+        <div style=${{ textAlign: "right" }}>
+          <div style=${{ fontFamily: "var(--display)", fontWeight: 700, letterSpacing: ".1em", fontSize: 20 }}>INVOICE</div>
+          <strong class="tabular">${inv.number}</strong>
+          <div style=${{ fontSize: 12.5, color: "var(--muted-fg)" }}>Date ${fmt.date(inv.issue_date)} · Due ${fmt.date(inv.due_date)}</div>
+          ${stamp && html`<span style=${{ display: "inline-block", marginTop: 6, padding: "1px 10px", border: `2px solid ${stamp[1]}`, color: stamp[1], borderRadius: 6, fontWeight: 700, letterSpacing: ".08em", fontSize: 12 }}>${stamp[0].toUpperCase()}${inv.state === "paid" ? ` ${fmt.date(inv.paid_date)}` : ""}</span>`}
+        </div>
+      </div>
+      <div><${Muted}>Bill to<//><div><strong>${inv.school || "—"}</strong></div><div style=${{ fontSize: 13 }}>${[inv.contact_name, inv.city].filter(Boolean).join(" · ")}</div></div>
+      <div style=${{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", gap: "8px 16px", borderTop: "1px solid var(--border)", paddingTop: 10, fontSize: 14 }}>
+        <span>${inv.description}</span><span class="tabular">${fmt.zar(inv.amount)}</span>
+        <strong style=${{ borderTop: "2px solid var(--primary)", paddingTop: 8 }}>Total due</strong><strong class="tabular" style=${{ borderTop: "2px solid var(--primary)", paddingTop: 8 }}>${fmt.zar(inv.state === "paid" ? 0 : inv.amount)}</strong>
+      </div>
+      ${inv.notes && html`<p class="pre" style=${{ margin: 0, fontSize: 13.5 }}>${inv.notes}</p>`}
+      ${details.invoice_bank && html`<div style=${{ fontSize: 13 }}><${Muted}>Pay by EFT to<//><div class="pre">${details.invoice_bank}</div></div>`}
+    </div>`;
+  }
+  function InvoicesPanel({ params, onChanged }) {
+    const { toast, company } = useApp();
+    const res = useResource("/api/invoices");
+    const summary = useResource("/api/invoices/summary");
+    const details = useResource("/api/invoice-settings");
+    const leads = useResource("/api/leads");
+    const contracts = useResource("/api/contracts");
+    const act = useAction();
+    const [filter, setFilter] = useState("");
+    const [editing, setEditing] = useState(null);
+    const [paying, setPaying] = useState(null);
+    const [detailsOpen, setDetailsOpen] = useState(false);
+    const [openId, setOpenId] = useState(params.invoice ? Number(params.invoice) : null);
+    const [prefill, setPrefill] = useState(null);
+    const [confirm, confirmDialog] = useConfirm();
+    useEffect(() => {
+      if (params.invoice) setOpenId(Number(params.invoice));
+    }, [params.invoice]);
+    // Opened from a contract ("Create invoice"): start a new invoice filled in from it.
+    useEffect(() => {
+      const c = params.contract && (contracts.data || []).find((x) => x.id === Number(params.contract));
+      if (!c) return;
+      setPrefill({
+        lead_id: c.lead_id, contract_id: c.id, amount: c.annual_value, issue_date: today(), due_date: addDays(today(), 30),
+        description: `Annual licence, ${fmt.date(c.start_date)} – ${fmt.date(c.end_date)}${c.learners ? ` (${c.learners} learners)` : ""}`,
+      });
+      setEditing("new");
+      go("finance?tab=invoices");
+    }, [params.contract, contracts.data]);
+    const reload = () => {
+      res.reload();
+      summary.reload();
+      onChanged();
+    };
+    const open = (res.data || []).find((i) => i.id === openId) || null;
+    const item = editing && editing !== "new" ? editing : null;
+    const d = details.data || {};
+    const doAction = async (inv, action, body, message) => {
+      const r = await act(() => api("POST", `/api/invoices/${inv.id}/${action}`, body), message);
+      if (r) reload();
+    };
+    const exportFile = (inv) => {
+      const page = invoiceHtml(inv, d, company);
+      if (window.WS_HOSTED) return window.dispatchEvent(new CustomEvent("ws:preview-file", { detail: { name: `${inv.number}.html`, text: page } }));
+      const w = window.open("", "_blank");
+      if (!w) return toast("Your browser blocked the new window. Allow pop-ups for this page and try again.", "danger");
+      w.document.write(page);
+      w.document.close();
+      w.focus();
+      setTimeout(() => w.print(), 300);
+    };
+    return html`<${Fragment}>
+      <${Loaded} res=${summary}>${(s) => html`<${Grid} min=${200} style=${{ marginBottom: 16 }}>
+        <${Kpi} label="Owed to you" icon="receipt" value=${fmt.zar(s.owed)} sub=${`${s.owedCount} unpaid invoice${s.owedCount === 1 ? "" : "s"}`} />
+        <${Card} style=${{ padding: 18, display: "grid", gap: 6, background: s.overdueCount ? "var(--danger-soft)" : "var(--card)" }}>
+          <span style=${{ color: "var(--muted-fg)", fontSize: 13 }}>Overdue</span>
+          <span class="tabular" style=${{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 26, fontWeight: 600, color: s.overdueCount ? "var(--danger)" : "var(--fg)" }}>${s.overdueCount > 0 && html`<${Icon} name="triangle-alert" size=${20} />`}${fmt.zar(s.overdue)}</span>
+          <span style=${{ fontSize: 12, color: "var(--muted-fg)" }}>${s.overdueCount ? `${s.overdueCount} past the due date: time for a reminder` : "Nothing overdue"}</span>
+        <//>
+        <${Kpi} label="Paid this month" icon="banknote" value=${fmt.zar(s.paidThisMonth)} />
+        <${Kpi} label="Drafts" icon="pencil" value=${fmt.number(s.drafts)} sub=${s.drafts ? "Not sent yet" : "No drafts"} />
+      <//>`}<//>
+      <${Loaded} res=${res}>${(rows) => html`<${Card}><${Table} rows=${filter ? rows.filter((i) => i.state === filter) : rows} search=${(i, q) => `${i.number} ${i.school || ""} ${i.description}`.toLowerCase().includes(q)} searchPlaceholder="Search invoices…"
+        onRowClick=${(i) => setOpenId(i.id)}
+        toolbar=${html`<${Select} ariaLabel="Status" value=${filter} onChange=${setFilter} placeholder="All invoices" options=${META.invoiceState} />
+          <span style=${{ flex: 1 }} /><${Button} size="sm" icon="settings" onClick=${() => setDetailsOpen(true)}>Invoice details<//><${Button} size="sm" variant="primary" icon="plus" onClick=${() => setEditing("new")}>New invoice<//>`}
+        empty=${html`<${EmptyState} icon="receipt" title="No invoices yet" description="Create one here, or from a school's contract under Contracts & renewals." />`}
+        columns=${[
+          { key: "number", header: "Invoice", sort: (i) => i.number, render: (i) => html`<strong class="tabular" style=${{ fontWeight: 600 }}>${i.number}</strong>` },
+          { key: "school", header: "School", sort: (i) => i.school || "", render: (i) => html`${i.school || "—"}<br /><${Muted}>${i.description}<//>` },
+          { key: "issued", header: "Date", hideOnMobile: true, sort: (i) => i.issue_date, render: (i) => fmt.date(i.issue_date) },
+          { key: "due", header: "Due", hideOnMobile: true, sort: (i) => i.due_date, render: (i) => (i.state === "sent" || i.state === "overdue" ? html`<${DueDate} date=${i.due_date} />` : html`<${Muted}>${i.state === "paid" ? `Paid ${fmt.date(i.paid_date)}` : "—"}<//>`) },
+          { key: "amount", header: "Amount", align: "right", sort: (i) => i.amount, render: (i) => html`<${Money} value=${i.amount} />` },
+          { key: "state", header: "Status", render: (i) => html`<${StatusBadge} meta=${META.invoiceState} value=${i.state} />` },
+        ]} /><//>`}<//>
+      ${open && html`<${Modal} open=${true} onClose=${() => { setOpenId(null); if (params.invoice) go("finance?tab=invoices"); }} title=${`${open.number} · ${open.school || ""}`} width=${720}
+        footer=${html`
+          ${open.status === "draft" && html`<${Button} variant="ghost" icon="trash-2" style=${{ color: "var(--danger)" }} onClick=${() => confirm(`Delete draft ${open.number}?`, async () => { await act(() => api("DELETE", `/api/invoices/${open.id}`), "Draft deleted"); setOpenId(null); reload(); })}>Delete<//>`}
+          ${["draft", "sent"].includes(open.status) && html`<${Button} variant="ghost" onClick=${() => confirm(`Void ${open.number}? It stays on record but no longer counts as owed.`, () => doAction(open, "void", {}, "Invoice voided"), "Void invoice")}>Void<//>`}
+          <span style=${{ flex: 1 }} />
+          ${!(window.WS_PREVIEW && !window.WS_HOSTED) && html`<${Button} icon="download" onClick=${() => exportFile(open)}>${window.WS_HOSTED ? "Save as file" : "Print or save PDF"}<//>`}
+          ${["draft", "sent"].includes(open.status) && html`<${Button} icon="pencil" onClick=${() => setEditing(open)}>Edit<//>`}
+          ${open.status === "draft" && html`<${Button} variant="primary" icon="check" onClick=${() => doAction(open, "send", {}, "Marked as sent")}>Mark as sent<//>`}
+          ${open.status === "sent" && html`<${Button} variant="primary" icon="banknote" onClick=${() => setPaying(open)}>Record payment<//>`}`}>
+        <${InvoicePaper} inv=${open} details=${d} company=${company} />
+        ${open.status === "draft" && html`<${Muted}>Send the invoice to the school (email it from your own mail), then mark it as sent so it counts as owed.<//>`}
+      <//>`}
+      <${FormModal} open=${Boolean(editing)} onClose=${() => { setEditing(null); setPrefill(null); }} title=${item ? `Edit ${item.number}` : "New invoice"} fields=${invoiceFields(leads.data || [], contracts.data || [])}
+        initial=${item || prefill} submitLabel=${item ? "Save" : "Create draft"}
+        onSubmit=${async (v) => {
+          if (item) await api("PATCH", `/api/invoices/${item.id}`, v);
+          else {
+            const created = await api("POST", "/api/invoices", v);
+            setOpenId(created.id);
+          }
+          setEditing(null);
+          setPrefill(null);
+          toast(item ? "Invoice saved" : "Draft created");
+          reload();
+        }} />
+      <${FormModal} open=${Boolean(paying)} onClose=${() => setPaying(null)} title=${paying ? `Record payment for ${paying.number}` : ""} description=${paying ? `Adds ${fmt.zar(paying.amount)} income from ${paying.school || "the school"} on the date it arrived.` : ""}
+        fields=${[{ name: "paid_date", label: "Date the money arrived", type: "date", required: true, default: today() }]} submitLabel="Record payment"
+        onSubmit=${async (v) => {
+          await api("POST", `/api/invoices/${paying.id}/pay`, v);
+          toast(`${paying.number} paid. The income was added to Transactions.`);
+          setPaying(null);
+          reload();
+        }} />
+      <${FormModal} open=${detailsOpen} onClose=${() => setDetailsOpen(false)} title="Invoice details" description="Printed on every invoice."
+        fields=${[
+          { name: "invoice_from", label: "Your company details", type: "textarea", full: true, rows: 3, placeholder: "Registered name, address" },
+          { name: "invoice_bank", label: "Bank details for payment", type: "textarea", full: true, rows: 3, placeholder: "Bank, account number, branch code, reference" },
+          { name: "vat_number", label: "VAT number", type: "text", hint: "Leave empty if you're not VAT registered." },
+        ]} initial=${d} submitLabel="Save details"
+        onSubmit=${async (v) => {
+          await api("PUT", "/api/invoice-settings", v);
+          setDetailsOpen(false);
+          toast("Invoice details saved");
+          details.reload();
         }} />
       ${confirmDialog}
     <//>`;
@@ -1648,7 +1841,7 @@
             </div>`}
             ${a.status === "pending" && html`<div style=${{ display: "flex", flexWrap: "wrap", gap: 8 }}>
               ${manager && a.requested_by !== user.id && html`<${Button} size="sm" variant="primary" icon="check" onClick=${() => setDeciding({ item: a, decision: "approved" })}>Approve<//><${Button} size="sm" icon="x" onClick=${() => setDeciding({ item: a, decision: "rejected" })}>Reject<//>`}
-              ${a.requested_by === user.id && html`<${Button} size="sm" variant="ghost" icon="pencil" onClick=${() => setEditing(a)}>Edit<//><${Button} size="sm" variant="ghost" icon="trash-2" onClick=${() => confirm(`Withdraw “${a.title}”?`, async () => { await act(() => api("DELETE", `/api/approvals/${a.id}`), "Request withdrawn"); res.reload(); })}>Withdraw<//>`}
+              ${a.requested_by === user.id && html`<${Button} size="sm" variant="ghost" icon="pencil" onClick=${() => setEditing(a)}>Edit<//><${Button} size="sm" variant="ghost" icon="trash-2" onClick=${() => confirm(`Withdraw “${a.title}”?`, async () => { await act(() => api("DELETE", `/api/approvals/${a.id}`), "Request withdrawn"); res.reload(); }, "Withdraw")}>Withdraw<//>`}
             </div>`}
           <//>`)}</div>`}`;
       }}<//>
@@ -1923,8 +2116,38 @@
         <${Section} title="Appearance">
           <${Field} id="theme" label="Theme"><${Select} id="theme" value=${theme} onChange=${(t) => { setTheme(t); applyTheme(t); }} options=${[{ value: "system", label: "Match my device" }, { value: "light", label: "Light" }, { value: "dark", label: "Dark" }]} style=${{ width: "100%" }} /><//>
         <//>
+        ${!window.WS_HOSTED && html`<${SessionsCard} />`}
         ${!window.WS_HOSTED && html`<${PasswordCard} key=${formKey} onDone=${() => { toast("Password changed. Other devices were signed out."); setFormKey((k) => k + 1); }} />`}
       <//>
+    <//>`;
+  }
+  /** Computer version: every browser this account is signed in on, with a way to sign each one out. */
+  function SessionsCard() {
+    const { toast } = useApp();
+    const res = useResource("/api/auth/sessions");
+    const act = useAction();
+    const signOut = async (s) => {
+      const r = await act(() => api("DELETE", `/api/auth/sessions/${s.id}`));
+      if (r && r.current) window.dispatchEvent(new Event("ws:signed-out"));
+      else if (r) {
+        toast(`Signed out of ${s.device}`);
+        res.reload();
+      }
+    };
+    const others = async () => {
+      const r = await act(() => api("POST", "/api/auth/sessions/others"));
+      if (r) {
+        toast(r.signedOut ? `Signed out of ${r.signedOut} other ${r.signedOut === 1 ? "device" : "devices"}` : "You weren't signed in anywhere else");
+        res.reload();
+      }
+    };
+    return html`<${Section} title="Where you're signed in" description="Sign out of a computer or phone you no longer use, or one that was lost."
+      actions=${res.data && res.data.length > 1 && html`<${Button} size="sm" onClick=${others}>Sign out everywhere else<//>`}>
+      <${Loaded} res=${res}>${(rows) => rows.map((s) => html`<div class="list-row" key=${s.id}>
+        <span style=${{ color: "var(--muted-fg)", display: "inline-flex" }}><${Icon} name=${/iPhone|Android/.test(s.device) ? "phone" : "cpu"} size=${16} /></span>
+        <span style=${{ flex: 1, minWidth: 0 }}><span style=${{ fontWeight: 500 }}>${s.device}</span>${s.current && html` <${Badge} tone="success" dot>This device<//>`}<br /><${Muted}>Last active ${fmt.relative(s.last_seen || s.created_at)} · signed in ${fmt.date(s.created_at)}<//></span>
+        <${Button} size="sm" variant="ghost" onClick=${() => signOut(s)}>${s.current ? "Sign out" : "Sign out device"}<//>
+      </div>`)}<//>
     <//>`;
   }
   /** Hosted only: the name the team sees, when the claude.ai name isn't the one you want shown. */
@@ -2019,19 +2242,33 @@
     return { v, set, errors, error, busy, submit };
   }
   const Alert = ({ children }) => children && html`<div role="alert" style=${{ padding: "8px 12px", borderRadius: 8, background: "var(--danger-soft)", color: "var(--danger)", fontSize: 13 }}>${children}</div>`;
+  const storedEmail = () => {
+    try {
+      return localStorage.getItem("ws-last-email") || "";
+    } catch {
+      return "";
+    }
+  };
   function LoginScreen({ company, onSignedIn }) {
-    const f = useAuthForm({ email: "", password: "" }, async (v) => {
+    const remembered = storedEmail();
+    const f = useAuthForm({ email: remembered, password: "", keep: true }, async (v) => {
       await api("POST", "/api/auth/login", v);
+      try {
+        localStorage.setItem("ws-last-email", v.email.trim());
+      } catch {
+        /* storage unavailable: nothing to remember */
+      }
       await onSignedIn();
     });
-    return html`<${AuthFrame} company=${company} title="Sign in" subtitle="Use the email and password your admin gave you.">
+    return html`<${AuthFrame} company=${company} title=${remembered ? "Welcome back" : "Sign in"} subtitle="Use the email and password your admin gave you.">
       <form onSubmit=${f.submit} style=${{ display: "grid", gap: 12 }}>
-        <${Field} id="email" label="Email"><${TextInput} id="email" type="email" autoComplete="username" value=${f.v.email} onChange=${f.set("email")} autoFocus=${true} /><//>
-        <${Field} id="password" label="Password"><${TextInput} id="password" type="password" autoComplete="current-password" value=${f.v.password} onChange=${f.set("password")} /><//>
+        <${Field} id="email" label="Email"><${TextInput} id="email" type="email" autoComplete="username" value=${f.v.email} onChange=${f.set("email")} autoFocus=${!remembered} /><//>
+        <${Field} id="password" label="Password"><${TextInput} id="password" type="password" autoComplete="current-password" value=${f.v.password} onChange=${f.set("password")} autoFocus=${Boolean(remembered)} /><//>
+        <label style=${{ display: "flex", alignItems: "center", gap: 8, fontSize: 13.5 }}><input id="keep" type="checkbox" checked=${f.v.keep} onChange=${(e) => f.set("keep")(e.target.checked)} />Keep me signed in on this computer</label>
         <${Alert}>${f.error}<//>
         <${Button} type="submit" variant="primary" size="lg" disabled=${f.busy}>${f.busy ? "Signing in…" : "Sign in"}<//>
       </form>
-      <${Muted}>Forgot your password? Ask an admin to set a new one.<//>
+      <${Muted}>Forgot your password? Ask an admin to set a new one. On a shared computer, untick “Keep me signed in”.<//>
     <//>`;
   }
   function SetupScreen({ onDone }) {
@@ -2074,6 +2311,74 @@
         <${Button} type="submit" variant="primary" size="lg" disabled=${f.busy}>${f.busy ? "Saving…" : "Save and continue"}<//>
       </form>
       <button onClick=${onSignOut} style=${{ background: "none", border: 0, color: "var(--muted-fg)", cursor: "pointer", fontSize: 13 }}>Sign out</button>
+    <//>`;
+  }
+
+  // ─────────────────────────── Hosted sign-in ───────────────────────────
+  // On claude.ai, claude.ai has already verified who you are. This page confirms it, explains your role,
+  // and handles the first visit: company setup for the owner, a name for everyone else.
+  const enteredKey = "ws-entered";
+  const hasEntered = (id) => {
+    try {
+      return sessionStorage.getItem(enteredKey) === String(id);
+    } catch {
+      return false;
+    }
+  };
+  const setEnteredFlag = (id) => {
+    try {
+      if (id === null) sessionStorage.removeItem(enteredKey);
+      else sessionStorage.setItem(enteredKey, String(id));
+    } catch {
+      /* storage unavailable: the sign-in page shows again next time */
+    }
+  };
+  const ROLE_EXPLAINED = {
+    admin: "You own this workspace: you manage settings and the team, and see everything.",
+    manager: "You see finance, approve spending and manage the work.",
+    member: "You work on tasks, schools, content, meetings and documents, and can ask for spending approval.",
+  };
+  function HostedSignIn({ status, onContinue }) {
+    const { user, hosted, company } = status;
+    const first = user.name.split(" ")[0];
+    const [name, setName] = useState(user.name === "Team member" ? "" : user.name);
+    const [setup, setSetup] = useState({ company_name: company || "Integral Academy", opening_balance: "", opening_date: today() });
+    const [error, setError] = useState("");
+    const [busy, setBusy] = useState(false);
+    const go = async (e) => {
+      e.preventDefault();
+      setBusy(true);
+      setError("");
+      try {
+        if (hosted.needsSetup) await api("PUT", "/api/settings", setup);
+        if (hosted.firstVisit && name.trim() && name.trim() !== user.name) await api("PATCH", `/api/users/${user.id}`, { display_name: name.trim() });
+        if (hosted.firstVisit) await api("POST", "/api/auth/welcomed");
+        await onContinue();
+      } catch (err) {
+        setError(err.message);
+        setBusy(false);
+      }
+    };
+    const title = hosted.needsSetup ? "Set up your workspace" : hosted.firstVisit ? `Welcome, ${first}` : `Welcome back, ${first}`;
+    return html`<${AuthFrame} company=${hosted.needsSetup ? setup.company_name : company} title=${title} subtitle=${hosted.needsSetup ? "A few details before your team joins. You can change them later in Team & settings." : "You're signed in with your claude.ai account."}>
+      <form onSubmit=${go} style=${{ display: "grid", gap: 14 }}>
+        <div style=${{ display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", borderRadius: 12, background: "var(--subtle)", border: "1px solid var(--border)" }}>
+          <${Avatar} name=${name || user.name} size=${42} />
+          <div style=${{ minWidth: 0, display: "grid", gap: 3 }}>
+            <strong style=${{ overflowWrap: "anywhere" }}>${name || user.name}</strong>
+            <span style=${{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6 }}><${StatusBadge} meta=${META.role} value=${user.role} /><${Muted}>via claude.ai<//></span>
+          </div>
+        </div>
+        <${Muted}>${ROLE_EXPLAINED[user.role]}<//>
+        ${hosted.needsSetup ? html`
+          <${Field} id="si-company" label="Company name"><${TextInput} id="si-company" value=${setup.company_name} onChange=${(v) => setSetup((x) => ({ ...x, company_name: v }))} /><//>
+          <${Field} id="si-balance" label="Bank balance to start from (R)" hint="Your balance on the date below, before any transactions you'll record."><${TextInput} id="si-balance" type="number" min="0" step="0.01" value=${setup.opening_balance} onChange=${(v) => setSetup((x) => ({ ...x, opening_balance: v }))} placeholder="e.g. 250000" /><//>
+          <${Field} id="si-date" label="Balance as at"><${TextInput} id="si-date" type="date" value=${setup.opening_date} onChange=${(v) => setSetup((x) => ({ ...x, opening_date: v }))} /><//>`
+        : hosted.firstVisit && html`<${Field} id="si-name" label="What should the team call you?" hint="Shown on tasks, notes and approvals. You can change it in My account."><${TextInput} id="si-name" value=${name} onChange=${setName} placeholder=${user.name} /><//>`}
+        <${Alert}>${error}<//>
+        <${Button} type="submit" variant="primary" size="lg" disabled=${busy}>${busy ? "Opening…" : hosted.needsSetup ? "Save and open the workspace" : "Continue to the workspace"}<//>
+      </form>
+      <${Muted}>Not you? Switch accounts in claude.ai, then open this page again. Who can get in is managed from the page's Share menu.<//>
     <//>`;
   }
 
@@ -2333,7 +2638,7 @@
             <${Avatar} name=${user.name} size=${30} />
             <span style=${{ minWidth: 0 }}><span style=${{ display: "block", color: "var(--sidebar-heading)", fontSize: 13, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>${user.name}</span><span style=${{ fontSize: 11.5, color: "var(--sidebar-muted)" }}>${META.role[user.role].label}</span></span>
           </a>
-          ${!window.WS_HOSTED && html`<button title="Sign out" aria-label="Sign out" onClick=${onSignOut} style=${{ background: "none", border: 0, color: "var(--sidebar-muted)", cursor: "pointer", display: "grid", placeItems: "center", width: 32, height: 32, borderRadius: 8 }}><${Icon} name="log-out" /></button>`}
+          ${html`<button title="Sign out" aria-label="Sign out" onClick=${onSignOut} style=${{ background: "none", border: 0, color: "var(--sidebar-muted)", cursor: "pointer", display: "grid", placeItems: "center", width: 32, height: 32, borderRadius: 8 }}><${Icon} name="log-out" /></button>`}
         </div>
       </aside>
       <div class="main">
@@ -2358,6 +2663,7 @@
 
   function App() {
     const [status, setStatus] = useState(null); // { setupRequired, user, company }
+    const [entered, setEntered] = useState(false); // hosted: past the sign-in page this visit
     const [users, setUsers] = useState([]);
     const [toasts, setToasts] = useState([]);
     const toast = useCallback((message, tone = "success") => {
@@ -2407,6 +2713,12 @@
       };
     }, [status, users, reloadUsers, toast]);
     const signOut = async () => {
+      if (window.WS_HOSTED) {
+        setEnteredFlag(null);
+        setEntered(false);
+        window.location.hash = "";
+        return;
+      }
       await api("POST", "/api/auth/logout").catch(() => {});
       setStatus((s) => ({ ...s, user: null }));
       window.location.hash = "";
@@ -2415,6 +2727,8 @@
     if (!status) body = html`<div id="boot">Loading…</div>`;
     else if (status.error) body = html`<div id="boot"><div>Can't reach the workspace server.<br />${status.error}<br /><br /><${Button} onClick=${loadStatus}>Try again<//></div></div>`;
     else if (status.setupRequired) body = html`<${SetupScreen} onDone=${loadStatus} />`;
+    else if (status.user && status.hosted && !entered && !hasEntered(status.user.id))
+      body = html`<${HostedSignIn} status=${status} onContinue=${async () => { setEnteredFlag(status.user.id); setEntered(true); await loadStatus(); }} />`;
     else if (!status.user && status.hosted) body = html`<${AuthFrame} company=${status.company} title="Integral Workspace" subtitle=${status.hosted.message || "Loading the workspace…"}><${Button} variant="primary" onClick=${() => window.location.reload()}>Try again<//><//>`;
     else if (!status.user) body = html`<${LoginScreen} company=${status.company} onSignedIn=${loadStatus} />`;
     else if (status.user.must_change_password) body = html`<${NewPasswordScreen} company=${status.company} user=${status.user} onDone=${loadStatus} onSignOut=${signOut} />`;

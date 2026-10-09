@@ -7,7 +7,7 @@
 (function () {
   "use strict";
   const HOSTED = Boolean(window.WS_HOSTED);
-  const STORE_KEY = "integral-workspace-lite-preview-v3";
+  const STORE_KEY = "integral-workspace-lite-preview-v4";
   const M = window.WSMetrics;
   window.WS_PREVIEW = true; // no printing or direct file saves inside claude.ai
   const DEMO_PASSWORD = "integral-demo-2026";
@@ -50,6 +50,7 @@
     contracts: { learners: null, status: "active", notes: null, end_reason: null, renewed_to: null, reminded_60: 0, reminded_30: 0, created_by: null },
     goals: { metric: "manual", baseline: 0, current_value: 0, unit: null, owner_id: null, notes: null, archived: 0, created_by: null },
     goal_updates: { note: null, author_id: null },
+    invoices: { lead_id: null, contract_id: null, status: "draft", paid_date: null, transaction_id: null, notes: null, overdue_notified: 0, created_by: null },
   };
   const TABLES = Object.keys(DEFAULTS);
   let db;
@@ -100,15 +101,18 @@
     ["approvals", "approvals"], ["notifications", "notifications"], ["contracts", "contracts"], ["goals", "goals"], ["goal_updates", "goal_updates"],
     ["users", "members"], ["activity", "activity"], ["documents", "documents"],
     ["activity", "money/ledger/activity"], ["transactions", "money/ledger/transactions"], ["documents", "money/vault/documents"],
+    ["invoices", "money/ledger/invoices"],
   ];
   function pathFor(table, row) {
     if (table === "users") return `members/${row.uid}`;
     if (table === "transactions") return `money/ledger/transactions/${row.id}`;
+    if (table === "invoices") return `money/ledger/invoices/${row.id}`;
     if (table === "activity") return row.audience === "manager" ? `money/ledger/activity/${row.id}` : `activity/${row.id}`;
     if (table === "documents") return row.private ? `money/vault/documents/${row.id}` : `documents/${row.id}`;
     return `${table}/${row.id}`;
   }
   const isMoneyPath = (path) => path.startsWith("money/");
+  const MONEY_SETTINGS = ["opening_balance", "opening_date", "last_backup_at", "invoice_from", "invoice_bank", "vat_number"];
   /** JSON with sorted keys, so the same data always compares equal whichever side wrote it. */
   function canon(value) {
     if (Array.isArray(value)) return `[${value.map(canon).join(",")}]`;
@@ -134,7 +138,7 @@
       }
     if (db.settings.company_name != null || cloud.shadow.has("meta/settings")) out.set("meta/settings", canon({ company_name: db.settings.company_name ?? null }));
     if (canWriteMoney()) {
-      const money = { opening_balance: db.settings.opening_balance ?? null, opening_date: db.settings.opening_date ?? null, last_backup_at: db.settings.last_backup_at ?? null };
+      const money = Object.fromEntries(MONEY_SETTINGS.map((k) => [k, db.settings[k] ?? null]));
       if (Object.values(money).some((v) => v !== null) || cloud.shadow.has("money/settings")) out.set("money/settings", canon(money));
       if (db.budgets.length || cloud.shadow.has("money/budgets")) out.set("money/budgets", canon({ items: db.budgets }));
     }
@@ -201,7 +205,7 @@
       return;
     }
     if (path === "money/settings") {
-      for (const k of ["opening_balance", "opening_date", "last_backup_at"]) if (body && body[k] != null) db.settings[k] = String(body[k]);
+      for (const k of MONEY_SETTINGS) if (body && body[k] != null) db.settings[k] = String(body[k]);
       return;
     }
     if (path === "money/budgets") {
@@ -317,7 +321,10 @@
       // Joining: everyone who opens the workspace gets a member record; their role follows their sharing level.
       cloud.state = "joining";
       const mine = myRow();
-      if (!mine) insert("users", { uid: cloud.uid, role: cloud.role, job_title: null, active: 1, display_name: null });
+      if (!mine) {
+        insert("users", { uid: cloud.uid, role: cloud.role, job_title: null, active: 1, display_name: null });
+        cloud.firstVisit = true;
+      }
       else if (mine.role !== cloud.role) mine.role = cloud.role;
       if (myRow() && !myRow().active) {
         cloudSync();
@@ -551,8 +558,13 @@
       canDelete: (user) => atLeast(user, "manager"),
       onDelete: (row) => {
         db.lead_notes = db.lead_notes.filter((n) => n.lead_id !== row.id);
+        const gone = new Set(db.contracts.filter((c) => c.lead_id === row.id).map((c) => c.id));
         db.contracts = db.contracts.filter((c) => c.lead_id !== row.id);
         for (const t of db.tasks) if (t.lead_id === row.id) t.lead_id = null;
+        for (const i of db.invoices) {
+          if (i.lead_id === row.id) i.lead_id = null;
+          if (gone.has(i.contract_id)) i.contract_id = null;
+        }
       },
     },
     content: {
@@ -639,9 +651,34 @@
         checkContract({ ...row, ...data });
         return "end_date" in data && data.end_date !== row.end_date ? { ...data, reminded_60: 0, reminded_30: 0 } : data;
       },
+      onDelete: (row) => {
+        for (const i of db.invoices) if (i.contract_id === row.id) i.contract_id = null;
+      },
       canCreate: (user) => atLeast(user, "manager"),
       canEdit: (user) => atLeast(user, "manager"),
       canDelete: (user) => atLeast(user, "manager"),
+    },
+    invoices: {
+      label: (r) => `invoice ${r.number}`,
+      audience: "manager",
+      fields: {
+        lead_id: { type: "int", required: true }, contract_id: { type: "int" }, description: { type: "text", required: true, max: 300 },
+        amount: { type: "money", required: true, positive: true }, issue_date: { type: "date", required: true }, due_date: { type: "date", required: true },
+        notes: { type: "text", max: 2000 },
+      },
+      canRead: (user) => atLeast(user, "manager"),
+      list: () => invoiceRows(),
+      beforeCreate: (data, user) => {
+        checkInvoice(data);
+        return { ...data, number: M.nextInvoiceNumber(db.invoices), status: "draft", created_by: user.id };
+      },
+      beforeUpdate: (data, row) => {
+        checkInvoice({ ...row, ...data });
+        return data;
+      },
+      canCreate: (user) => atLeast(user, "manager"),
+      canEdit: (user, row) => atLeast(user, "manager") && ["draft", "sent"].includes(row.status),
+      canDelete: (user, row) => atLeast(user, "manager") && row.status === "draft",
     },
     goals: {
       label: (r) => `goal “${r.title}”`,
@@ -671,6 +708,17 @@
   function checkContract(c) {
     if (!byId("leads", c.lead_id)) throw new HttpError(422, "Choose a school.", { lead_id: "Choose a school." });
     if (c.end_date <= c.start_date) throw new HttpError(422, "The end date must be after the start date.", { end_date: "Must be after the start date." });
+  }
+  function checkInvoice(i) {
+    if (!byId("leads", i.lead_id)) throw new HttpError(422, "Choose a school.", { lead_id: "Choose a school." });
+    if (i.due_date < i.issue_date) throw new HttpError(422, "The due date can't be before the invoice date.", { due_date: "Must be on or after the invoice date." });
+  }
+  function invoiceRows() {
+    const today = localToday();
+    return sortBy(db.invoices, (a, b) => cmp(b.issue_date, a.issue_date), (a, b) => b.id - a.id).map((i) => {
+      const lead = byId("leads", i.lead_id) || {};
+      return { ...i, school: lead.school ?? null, contact_name: lead.contact_name ?? null, contact_email: lead.contact_email ?? null, city: lead.city ?? null, state: M.invoiceState(i, today) };
+    });
   }
   function checkGoalDates(g) {
     if (g.due_date <= g.start_date) throw new HttpError(422, "The deadline must be after the start date.", { due_date: "Must be after the start date." });
@@ -745,6 +793,11 @@
         notify(people, system, `${lead.school}'s contract ends in ${days} day${days === 1 ? "" : "s"} and hasn't been renewed yet.`, link);
         c.reminded_30 = 1;
       }
+    }
+    for (const inv of db.invoices.filter((i) => i.status === "sent" && i.due_date < today && !i.overdue_notified)) {
+      const school = (byId("leads", inv.lead_id) || {}).school;
+      notify(managerIds(), system, `Invoice ${inv.number}${school ? ` to ${school}` : ""} is overdue (R${Number(inv.amount).toLocaleString("en-ZA")}, due ${shortDate(inv.due_date)}).`, `finance?tab=invoices&invoice=${inv.id}`);
+      inv.overdue_notified = 1;
     }
   }
 
@@ -895,6 +948,7 @@
       upcomingMeetings: sortBy(db.meetings.filter((m) => m.date >= today), (a, b) => cmp(a.date, b.date)).slice(0, 5),
       goals: goalRows(user).filter((g) => !g.archived && g.progress.status !== "missed").slice(0, 4),
       renewals: { summary: M.renewalSummary(db.contracts, today), due: contractRows().filter((c) => ["due", "lapsed"].includes(c.state)).slice(0, 5) },
+      invoices: manager ? { summary: M.invoiceSummary(db.invoices, today), open: invoiceRows().filter((i) => i.status === "sent").sort((a, b) => cmp(a.due_date, b.due_date)).slice(0, 5) } : null,
       activity: sortBy(db.activity.filter((a) => manager || a.audience === "all"), (a, b) => b.id - a.id).slice(0, 12).map((a) => ({ summary: String(a.summary).replace("{actor}", userName(a.user_id) || "Someone"), created_at: a.created_at, user_name: userName(a.user_id) })),
     };
   }
@@ -939,7 +993,12 @@
     if (HOSTED && parts[0] === "auth") {
       if (parts[1] === "status" && method === "GET") {
         const u = currentUser();
-        return [200, { setupRequired: false, user: u ? { ...u, name: cloud.myName || "there" } : null, company: getSetting("company_name", "Integral Academy"), hosted: { state: cloud.state, message: HOSTED_MESSAGES[cloud.state] || null } }];
+        const hosted = { state: cloud.state, message: HOSTED_MESSAGES[cloud.state] || null, firstVisit: Boolean(cloud.firstVisit), needsSetup: Boolean(u && u.role === "admin" && db.settings.company_name == null) };
+        return [200, { setupRequired: false, user: u ? { ...u, name: cloud.myName || "there" } : null, company: getSetting("company_name", "Integral Academy"), hosted }];
+      }
+      if (parts[1] === "welcomed" && method === "POST") {
+        cloud.firstVisit = false; // past the welcome once: later visits to the sign-in page say "Welcome back"
+        return [200, { ok: true }];
       }
       throw new HttpError(404, "Signing in is handled by claude.ai in the hosted workspace.");
     }
@@ -974,6 +1033,15 @@
 
     const user = currentUser();
     if (!user) throw new HttpError(401, "Please sign in.");
+    if (parts[0] === "auth" && parts[1] === "sessions") {
+      // The preview has one browser and no real sessions: show this one.
+      if (method === "GET") return [200, [{ id: "0000000000000000", current: true, device: "This browser", created_at: nowIso(), last_seen: nowIso(), expires_at: nowIso() }]];
+      if (method === "POST") return [200, { signedOut: 0 }];
+      if (method === "DELETE") {
+        db.session = null;
+        return [200, { ok: true, current: true }];
+      }
+    }
 
     if (parts[0] === "auth" && parts[1] === "password" && method === "POST") {
       const input = body();
@@ -1024,6 +1092,41 @@
         goal.current_value = data.value;
         logActivity(user.id, `${user.name} updated progress on “${goal.title}”`);
         return [200, { ok: true }];
+      }
+    }
+    if (parts[0] === "invoices" || parts[0] === "invoice-settings") {
+      if (!atLeast(user, "manager")) throw new HttpError(403, "Invoices are for managers.");
+      if (parts[0] === "invoice-settings") {
+        if (method === "GET") return [200, { invoice_from: getSetting("invoice_from", ""), invoice_bank: getSetting("invoice_bank", ""), vat_number: getSetting("vat_number", "") }];
+        if (method === "PUT") {
+          const data = validate({ invoice_from: { type: "text", max: 600 }, invoice_bank: { type: "text", max: 600 }, vat_number: { type: "text", max: 40 } }, body(), { partial: true });
+          for (const [k, v] of Object.entries(data)) setSetting(k, v ?? "");
+          return [200, { ok: true }];
+        }
+      }
+      if (parts[1] === "summary" && method === "GET") return [200, M.invoiceSummary(db.invoices, localToday())];
+      if (parts[1] && ["send", "pay", "void"].includes(parts[2]) && method === "POST") {
+        const inv = byId("invoices", parts[1]);
+        if (!inv) throw new HttpError(404, "Not found.");
+        const school = (byId("leads", inv.lead_id) || {}).school;
+        if (parts[2] === "send") {
+          if (inv.status !== "draft") throw new HttpError(409, "Only a draft can be marked as sent.");
+          inv.status = "sent";
+          logActivity(user.id, `${user.name} marked invoice ${inv.number} as sent`, "manager");
+          return [200, { ok: true }];
+        }
+        if (parts[2] === "void") {
+          if (!["draft", "sent"].includes(inv.status)) throw new HttpError(409, "A paid invoice can't be voided. Record a refund as an expense instead.");
+          inv.status = "void";
+          logActivity(user.id, `${user.name} voided invoice ${inv.number}`, "manager");
+          return [200, { ok: true }];
+        }
+        if (!["draft", "sent"].includes(inv.status)) throw new HttpError(409, "This invoice is already paid or void.");
+        const data = validate({ paid_date: { type: "date", required: true } }, body());
+        const tx = insert("transactions", { kind: "income", date: data.paid_date, amount: inv.amount, category: inv.contract_id ? "School contracts" : "Services", description: `Invoice ${inv.number}${school ? `: ${school}` : ""}`, counterparty: school || null, created_by: user.id });
+        Object.assign(inv, { status: "paid", paid_date: data.paid_date, transaction_id: tx.id });
+        logActivity(user.id, `${user.name} recorded payment of invoice ${inv.number} (R${Number(inv.amount).toLocaleString("en-ZA")})`, "manager");
+        return [200, { ok: true, transaction_id: tx.id }];
       }
     }
     if (parts[0] === "contracts" && parts[1] === "summary" && method === "GET") return [200, M.renewalSummary(db.contracts, localToday())];

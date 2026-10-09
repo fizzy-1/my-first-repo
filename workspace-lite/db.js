@@ -181,6 +181,23 @@ CREATE TABLE IF NOT EXISTS budgets (
   category TEXT PRIMARY KEY,
   monthly_amount REAL NOT NULL CHECK (monthly_amount >= 0)
 );
+CREATE TABLE IF NOT EXISTS invoices (
+  id INTEGER PRIMARY KEY,
+  number TEXT NOT NULL UNIQUE,
+  lead_id INTEGER REFERENCES leads(id) ON DELETE SET NULL,
+  contract_id INTEGER REFERENCES contracts(id) ON DELETE SET NULL,
+  description TEXT NOT NULL,
+  amount REAL NOT NULL CHECK (amount > 0),
+  issue_date TEXT NOT NULL,
+  due_date TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','sent','paid','void')),
+  paid_date TEXT,
+  transaction_id INTEGER,
+  notes TEXT,
+  overdue_notified INTEGER NOT NULL DEFAULT 0,
+  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 CREATE INDEX IF NOT EXISTS contracts_end ON contracts(end_date);
 CREATE INDEX IF NOT EXISTS notifications_user ON notifications(user_id, read_at);
 CREATE INDEX IF NOT EXISTS tasks_assignee ON tasks(assignee_id, status);
@@ -202,6 +219,9 @@ ensureColumn("activity", "audience", "TEXT NOT NULL DEFAULT 'all'");
 ensureColumn("tasks", "recurrence", "TEXT NOT NULL DEFAULT 'none' CHECK (recurrence IN ('none','weekly','monthly'))");
 ensureColumn("leads", "won_at", "TEXT");
 ensureColumn("content", "published_at", "TEXT");
+ensureColumn("sessions", "created_at", "TEXT");
+ensureColumn("sessions", "last_seen", "TEXT");
+ensureColumn("sessions", "device", "TEXT");
 
 /** Records a line in the team activity feed. "manager" entries (money, private files) are hidden from members. */
 export function logActivity(userId, summary, audience = "all") {

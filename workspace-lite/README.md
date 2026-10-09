@@ -10,14 +10,15 @@ A small team workspace for Integral Academy that runs on one of your own compute
 
 | Area | What it does |
 |---|---|
-| **Dashboard** | Cash and runway (managers), your tasks, overdue work, school follow-ups due this week, pending approvals, content progress, upcoming meetings, team activity |
+| **Dashboard** | Cash and runway, unpaid and overdue invoices (managers), your tasks, overdue work, school follow-ups due this week, pending approvals, content progress, upcoming meetings, team activity |
 | **Tasks** | List or board view; assign, prioritise, set due dates, tick off; weekly or monthly repeating tasks schedule their next copy automatically |
 | **Goals** | Targets with deadlines and an on-track / at-risk / behind status against a straight-line pace. Most goals track themselves from the workspace (schools signed, learners, content published, new leads, income, recurring revenue); others are updated by hand with a short history |
 | **Calendar** | Month view (agenda list on phones) of meetings, task deadlines, school follow-ups and content due dates; filter to just your own |
 | **Schools pipeline** | Schools from first contact to signed, with deal value, learner numbers, follow-up dates, call notes and one-click follow-up tasks |
-| **Contracts & renewals** | Each school's contract term and yearly value, annual recurring revenue, renewal rate, and the renewals that need a decision. 60 and 30 days before a contract ends the school's owner and the managers get a notification and a renewal task; renew or record "not renewing" in one click |
+| **Contracts & renewals** | Each school's contract term and yearly value, annual recurring revenue, renewal rate, and the renewals that need a decision. 60 and 30 days before a contract ends the school's owner and the managers get a notification and a renewal task; renew or record "not renewing" in one click, or create the year's invoice from the contract |
 | **Content** | Board for videos, lessons, worksheets, quizzes and past-paper memos: Idea → Recording → Editing → Review → Published |
-| **Finance** *(managers)* | Tabs for **Overview** (cash, burn, runway, this month against budget), **Transactions** (CSV export), **Budget** (a monthly amount per category, spending against it) and **Forecast** (cash month by month for the next 6–18 months from your contracts, other income and budget, with "what if we hire / earn more" inputs and the month cash would run out); **import a bank statement** (CSV from FNB, Standard Bank, Absa, Nedbank, Capitec and others), with rows already recorded skipped and categories reused from earlier transactions |
+| **Finance** *(managers)* | Tabs for **Overview** (cash, burn, runway, this month against budget), **Transactions** (CSV export), **Invoices**, **Budget** (a monthly amount per category, spending against it) and **Forecast** (cash month by month for the next 6–18 months from your contracts, other income and budget, with "what if we hire / earn more" inputs and the month cash would run out); **import a bank statement** (CSV from FNB, Standard Bank, Absa, Nedbank, Capitec and others), with rows already recorded skipped and categories reused from earlier transactions |
+| **Invoices** *(managers, under Finance)* | Numbered invoices (INV-0001, INV-0002…) for schools, typed in or created from a contract with the school, amount and term filled in. Draft → Sent → Paid, or Void. Recording a payment adds the income to Transactions automatically. Managers get a notification when a sent invoice passes its due date. Print an invoice or save it as a PDF, with your company and bank details on it |
 | **Stats** | A month-by-month matrix of the business (money for managers; recurring revenue, schools and learners under contract, leads, schools signed, content, tasks, meetings) with shading, trend lines and change, plus a team view of what each person is carrying. Export as CSV |
 | **Monthly update** *(managers)* | One-page summary of the month: money, schools signed, content published, tasks done, approvals and key decisions. Copy it as text for an email, or print it / save as PDF |
 | **Approvals** | Anyone can request spending approval. A manager approves or rejects it with a note. Nobody can approve their own request |
@@ -98,9 +99,15 @@ All settings are optional environment variables:
 | `DATA_DIR` | `./data` | Where the database and uploads are stored |
 | `COOKIE_SECURE` | `false` | Set to `true` when serving over HTTPS |
 
+## Signing in
+
+- The sign-in page remembers your email on that computer, so next time you only type your password.
+- **Keep me signed in** (ticked by default) keeps you signed in for 14 days. Untick it on a shared computer: you're signed out when the browser closes.
+- **My account → Where you're signed in** lists every computer and phone signed in to your account, with when each was last used. Sign out one you no longer use, or all of them except the one you're on.
+
 ## Security notes
 
-- Passwords are hashed with scrypt. Sessions last 14 days, and changing a password signs out the account's other devices.
+- Passwords are hashed with scrypt. Sessions last up to 14 days, and changing a password signs out the account's other devices.
 - Repeated failed sign-ins are slowed down: an account locks for 15 minutes after 5 wrong passwords.
 - Every permission check runs on the server; the browser only hides buttons.
 - Members can't see finance, other people's approval requests, private documents, or money-related activity.
@@ -121,9 +128,9 @@ The calculations for goals, renewals, budgets, the forecast and stats live in `p
 
 `preview/hosted.html` is the same app running as a claude.ai artifact, with the team's real data in the artifact's shared database:
 
-- **Signing in:** people use their claude.ai accounts; there are no passwords. Anyone the page is shared with joins automatically when they open it.
+- **Signing in:** people use their claude.ai accounts; there are no passwords. The sign-in page shows who you are and your role, then **Continue to the workspace**. The first time, the owner sets the company name and starting bank balance there, and everyone else chooses the name the team sees. Signing out returns to that page.
 - **Roles come from the Share menu:** the Owner is the admin, an **Editor** is a manager, and a **Contributor** (where your plan offers it) is a member. Viewers can't use the workspace.
-- **Finance is protected by claude.ai itself:** transactions, budgets, the opening balance, private files and money-related activity live under `money/` in the database, which only Editors and the Owner can read or write.
+- **Finance is protected by claude.ai itself:** transactions, invoices, budgets, the opening balance, private files and money-related activity live under `money/` in the database, which only Editors and the Owner can read or write.
 - **Live:** changes from other people appear without reloading. Exports, document files and backups are saved through claude.ai's download prompt.
 - **Limits:** files up to 5 MB each, and 25 000 database records in total (years of use for a small team). The backup is a `.json` file of every record; uploaded files aren't inside it.
 - **Privacy:** spending requests and notifications are stored where every member can technically read them, although the app only shows people their own. Don't put anything secret in them.

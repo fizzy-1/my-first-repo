@@ -111,6 +111,25 @@
       tx("income", 28, vary(6000 + growth * 21000, 1500), "Learner subscriptions", "Learner subscriptions", "PayFast payouts");
       if (m === 7) tx("income", 12, 150000, "Grants", "Innovation grant (first tranche)", "Edtech innovation fund");
     }
+    // ── Invoices: workshops and bootcamps on top of licences, plus a renewal invoice waiting to go out ──
+    const invoice = (school, description, amount, issue, due, status, paidOffset, extra = {}) => {
+      const row = { number: `INV-${String((tables.invoices || []).length + 1).padStart(4, "0")}`, lead_id: lead[school], contract_id: null, description, amount, issue_date: day(issue), due_date: day(due), status, paid_date: null, transaction_id: null, notes: null, overdue_notified: 0, created_by: ayesha, created_at: at(day(issue), 10), ...extra };
+      if (status === "paid") {
+        row.paid_date = day(paidOffset);
+        row.transaction_id = add("transactions", { kind: "income", date: row.paid_date, amount, category: "Services", description: `Invoice ${row.number}: ${school}`, counterparty: school, created_by: ayesha, created_at: at(row.paid_date, 12) });
+      }
+      return add("invoices", row);
+    };
+    invoice("Diepkloof Secondary", "Teacher training workshop: teaching Paper 1 calculus", 6500, -50, -20, "paid", -35);
+    invoice("Inanda Comprehensive", "Exam-prep bootcamp for Grade 12s (2 days)", 4800, -28, -14, "paid", -18);
+    invoice("Mabopane High School", "Teacher training workshop: Euclidean geometry", 7200, -40, -10, "sent");
+    invoice("Langa High School", "Exam-prep bootcamp for Grade 12s (1 day)", 5500, -5, 25, "sent");
+    const alexandra = tables.contracts.find((c) => c.lead_id === lead["Alexandra High School"]);
+    invoice("Alexandra High School", "Annual licence renewal (150 learners)", 44100, 0, 30, "draft", null, { contract_id: alexandra ? alexandra.id : null });
+    const settingsExtra = {
+      invoice_from: "Integral Academy (Pty) Ltd\nWorkshop17, 173 Oxford Road\nRosebank, Johannesburg 2196",
+      invoice_bank: "FNB Business Cheque\nAccount 62 0000 0000\nBranch code 250655\nReference: invoice number",
+    };
     const budgets = [["Salaries", 95000], ["Rent", 6500], ["Software", 4500], ["Marketing", 12000], ["Travel", 3000], ["Equipment", 3000]].map(([category, monthly_amount]) => ({ category, monthly_amount }));
 
     // ── Content: what's in production, plus what was published over the year ──
@@ -206,7 +225,7 @@
     activity(ayesha, "Ayesha Patel approved “Canva Pro for the team”", "manager");
     activity(nomvula, "Nomvula Khumalo updated content “Financial maths in 15 minutes”");
 
-    return { password: DEMO_PASSWORD, people, settings, budgets, tables, ids: { sipho, ayesha, johan, nomvula, kagiso } };
+    return { password: DEMO_PASSWORD, people, settings: { ...settings, ...settingsExtra }, budgets, tables, ids: { sipho, ayesha, johan, nomvula, kagiso } };
   }
 
   globalThis.WSDemoData = { buildDemoData, DEMO_PASSWORD };

@@ -70,20 +70,30 @@ function parseCookies(req) {
 const ROLE_RANK = { member: 1, manager: 2, admin: 3 };
 const atLeast = (user, role) => ROLE_RANK[user.role] >= ROLE_RANK[role];
 
-function createSession(res, userId) {
-  const token = randomBytes(32).toString("base64url");
-  const expires = new Date(Date.now() + SESSION_DAYS * 86400000);
-  run("INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)", sha256(token), userId, expires.toISOString());
-  res.setHeader("Set-Cookie", `ws_session=${token}; Path=/; HttpOnly; SameSite=Lax; Expires=${expires.toUTCString()}${SECURE_COOKIE ? "; Secure" : ""}`);
+/** "Chrome on Windows" from a browser's user-agent string, for the signed-in devices list. */
+function deviceName(ua = "") {
+  const browser = /Edg\//.test(ua) ? "Edge" : /OPR\/|Opera/.test(ua) ? "Opera" : /Firefox\//.test(ua) ? "Firefox" : /Chrome\//.test(ua) ? "Chrome" : /Safari\//.test(ua) ? "Safari" : "A browser";
+  const os = /iPhone/.test(ua) ? "iPhone" : /iPad/.test(ua) ? "iPad" : /Android/.test(ua) ? "Android" : /Windows/.test(ua) ? "Windows" : /Mac OS X|Macintosh/.test(ua) ? "Mac" : /Linux/.test(ua) ? "Linux" : "an unknown device";
+  return `${browser} on ${os}`;
 }
+/** Signs someone in. "Keep me signed in" lasts 14 days; otherwise the cookie ends with the browser (at most 12 hours). */
+function createSession(req, res, userId, keep = true) {
+  const token = randomBytes(32).toString("base64url");
+  const expires = new Date(Date.now() + (keep ? SESSION_DAYS * 86400000 : 12 * 3600000));
+  const now = new Date().toISOString();
+  run("INSERT INTO sessions (token_hash, user_id, expires_at, created_at, last_seen, device) VALUES (?, ?, ?, ?, ?, ?)", sha256(token), userId, expires.toISOString(), now, now, deviceName(String(req.headers["user-agent"] || "")));
+  res.setHeader("Set-Cookie", `ws_session=${token}; Path=/; HttpOnly; SameSite=Lax${keep ? `; Expires=${expires.toUTCString()}` : ""}${SECURE_COOKIE ? "; Secure" : ""}`);
+}
+const sessionHash = (req) => sha256(parseCookies(req).ws_session || "");
 function currentUser(req) {
   const token = parseCookies(req).ws_session;
   if (!token) return null;
   const row = get(
-    `SELECT u.id, u.name, u.email, u.role, u.job_title, u.active, u.must_change_password, s.expires_at FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?`,
+    `SELECT u.id, u.name, u.email, u.role, u.job_title, u.active, u.must_change_password, s.expires_at, s.last_seen FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?`,
     sha256(token),
   );
   if (!row || !row.active || new Date(row.expires_at) < new Date()) return null;
+  if (!row.last_seen || Date.now() - new Date(row.last_seen).getTime() > 5 * 60000) run("UPDATE sessions SET last_seen = ? WHERE token_hash = ?", new Date().toISOString(), sha256(token));
   return { id: row.id, name: row.name, email: row.email, role: row.role, job_title: row.job_title, must_change_password: Boolean(row.must_change_password) };
 }
 
@@ -309,6 +319,32 @@ const RESOURCES = {
     canEdit: (user) => atLeast(user, "manager"),
     canDelete: (user) => atLeast(user, "manager"),
   },
+  invoices: {
+    label: (r) => `invoice ${r.number}`,
+    audience: "manager",
+    fields: {
+      lead_id: { type: "int", required: true },
+      contract_id: { type: "int" },
+      description: { type: "text", required: true, max: 300 },
+      amount: { type: "money", required: true, positive: true },
+      issue_date: { type: "date", required: true },
+      due_date: { type: "date", required: true },
+      notes: { type: "text", max: 2000 },
+    },
+    canRead: (user) => atLeast(user, "manager"),
+    list: () => invoiceRows(),
+    beforeCreate: (data, user) => {
+      checkInvoice(data);
+      return { ...data, number: M.nextInvoiceNumber(all("SELECT number FROM invoices")), status: "draft", created_by: user.id };
+    },
+    beforeUpdate: (data, row) => {
+      checkInvoice({ ...row, ...data });
+      return data;
+    },
+    canCreate: (user) => atLeast(user, "manager"),
+    canEdit: (user, row) => atLeast(user, "manager") && ["draft", "sent"].includes(row.status),
+    canDelete: (user, row) => atLeast(user, "manager") && row.status === "draft",
+  },
   goals: {
     label: (r) => `goal “${r.title}”`,
     fields: {
@@ -338,6 +374,14 @@ const RESOURCES = {
   },
 };
 
+function invoiceRows() {
+  const today = localToday();
+  return all("SELECT i.*, l.school, l.contact_name, l.contact_email, l.city FROM invoices i LEFT JOIN leads l ON l.id = i.lead_id ORDER BY i.issue_date DESC, i.id DESC").map((i) => ({ ...i, state: M.invoiceState(i, today) }));
+}
+function checkInvoice(i) {
+  if (!get("SELECT id FROM leads WHERE id = ?", i.lead_id)) throw new HttpError(422, "Choose a school.", { lead_id: "Choose a school." });
+  if (i.due_date < i.issue_date) throw new HttpError(422, "The due date can't be before the invoice date.", { due_date: "Must be on or after the invoice date." });
+}
 function CONTRACT_FIELDS() {
   return {
     lead_id: { type: "int", required: true },
@@ -408,6 +452,10 @@ const shortDate = (iso) => new Date(`${iso}T00:00:00`).toLocaleDateString("en-ZA
 function checkRenewals() {
   const today = localToday();
   const system = { id: 0 };
+  for (const inv of all("SELECT i.*, l.school FROM invoices i LEFT JOIN leads l ON l.id = i.lead_id WHERE i.status = 'sent' AND i.due_date < ? AND i.overdue_notified = 0", today)) {
+    notify(managerIds(), system, `Invoice ${inv.number}${inv.school ? ` to ${inv.school}` : ""} is overdue (R${Number(inv.amount).toLocaleString("en-ZA")}, due ${shortDate(inv.due_date)}).`, `finance?tab=invoices&invoice=${inv.id}`);
+    run("UPDATE invoices SET overdue_notified = 1 WHERE id = ?", inv.id);
+  }
   for (const c of all("SELECT c.*, l.school, l.owner_id FROM contracts c JOIN leads l ON l.id = c.lead_id WHERE c.status = 'active'")) {
     const days = M.daysBetween(today, c.end_date);
     if (days < 0 || days > 60) continue;
@@ -506,6 +554,7 @@ function dashboard(user) {
     upcomingMeetings: all("SELECT * FROM meetings WHERE date >= ? ORDER BY date LIMIT 5", today),
     goals: goalRows(user).filter((g) => !g.archived && !["missed"].includes(g.progress.status)).slice(0, 4),
     renewals: { summary: M.renewalSummary(all("SELECT * FROM contracts"), today), due: contractRows().filter((c) => ["due", "lapsed"].includes(c.state)).slice(0, 5) },
+    invoices: manager ? { summary: M.invoiceSummary(all("SELECT * FROM invoices"), today), open: invoiceRows().filter((i) => i.status === "sent").sort((a, b) => a.due_date.localeCompare(b.due_date)).slice(0, 5) } : null,
     activity: all(`SELECT a.summary, a.created_at, u.name AS user_name FROM activity a LEFT JOIN users u ON u.id = a.user_id ${manager ? "" : "WHERE a.audience = 'all'"} ORDER BY a.id DESC LIMIT 12`),
   };
 }
@@ -717,7 +766,7 @@ async function api(req, res, url) {
       const info = run("INSERT INTO users (name, email, password_hash, role, job_title) VALUES (?, ?, ?, 'admin', 'Founder')", data.name, data.email, await hashPassword(body.password));
       if (data.company) setSetting("company_name", data.company);
       logActivity(Number(info.lastInsertRowid), `${data.name} set up the workspace`);
-      createSession(res, Number(info.lastInsertRowid));
+      createSession(req, res, Number(info.lastInsertRowid));
       return send(res, 201, { ok: true });
     }
     if (parts[1] === "login" && method === "POST") {
@@ -733,7 +782,7 @@ async function api(req, res, url) {
         recordFailure(keys);
         throw new HttpError(401, "Invalid email or password.");
       }
-      createSession(res, user.id);
+      createSession(req, res, user.id, body.keep !== false);
       return send(res, 200, { ok: true });
     }
     if (parts[1] === "logout" && method === "POST") {
@@ -758,6 +807,22 @@ async function api(req, res, url) {
     const token = sha256(parseCookies(req).ws_session || "");
     run("DELETE FROM sessions WHERE user_id = ? AND token_hash <> ?", user.id, token);
     return send(res, 200, { ok: true });
+  }
+  // ── Where you're signed in ──
+  if (parts[0] === "auth" && parts[1] === "sessions") {
+    const mine = sessionHash(req);
+    if (method === "GET" && !parts[2])
+      return send(res, 200, all("SELECT token_hash, device, created_at, last_seen, expires_at FROM sessions WHERE user_id = ? AND expires_at > ? ORDER BY last_seen DESC", user.id, new Date().toISOString())
+        .map((s) => ({ id: s.token_hash.slice(0, 16), current: s.token_hash === mine, device: s.device || "A browser", created_at: s.created_at, last_seen: s.last_seen, expires_at: s.expires_at }))
+        .sort((a, b) => b.current - a.current));
+    if (method === "POST" && parts[2] === "others") {
+      const n = run("DELETE FROM sessions WHERE user_id = ? AND token_hash <> ?", user.id, mine).changes;
+      return send(res, 200, { signedOut: n });
+    }
+    if (method === "DELETE" && /^[0-9a-f]{16}$/.test(parts[2] || "")) {
+      run("DELETE FROM sessions WHERE user_id = ? AND substr(token_hash, 1, 16) = ?", user.id, parts[2]);
+      return send(res, 200, { ok: true, current: mine.startsWith(parts[2]) });
+    }
   }
   // Someone signed in with a temporary password must choose their own before doing anything else.
   if (user.must_change_password) throw new HttpError(403, "Please choose a new password first.");
@@ -991,6 +1056,41 @@ async function api(req, res, url) {
   }
 
   // ── Contracts: renew, or record that a school isn't renewing ──
+  // ── Invoices: summary, send, record payment, void; the details printed on every invoice ──
+  if (parts[0] === "invoices" || parts[0] === "invoice-settings") {
+    if (!atLeast(user, "manager")) throw new HttpError(403, "Invoices are for managers.");
+    if (parts[0] === "invoice-settings") {
+      if (method === "GET") return send(res, 200, { invoice_from: getSetting("invoice_from", ""), invoice_bank: getSetting("invoice_bank", ""), vat_number: getSetting("vat_number", "") });
+      if (method === "PUT") {
+        const data = validate({ invoice_from: { type: "text", max: 600 }, invoice_bank: { type: "text", max: 600 }, vat_number: { type: "text", max: 40 } }, await readJson(req), { partial: true });
+        for (const [k, v] of Object.entries(data)) setSetting(k, v ?? "");
+        return send(res, 200, { ok: true });
+      }
+    }
+    if (parts[1] === "summary" && method === "GET") return send(res, 200, M.invoiceSummary(all("SELECT * FROM invoices"), localToday()));
+    if (parts[1] && ["send", "pay", "void"].includes(parts[2]) && method === "POST") {
+      const inv = get("SELECT i.*, l.school FROM invoices i LEFT JOIN leads l ON l.id = i.lead_id WHERE i.id = ?", Number(parts[1]));
+      if (!inv) throw new HttpError(404, "Not found.");
+      if (parts[2] === "send") {
+        if (inv.status !== "draft") throw new HttpError(409, "Only a draft can be marked as sent.");
+        update("invoices", inv.id, { status: "sent" });
+        logActivity(user.id, `${user.name} marked invoice ${inv.number} as sent`, "manager");
+        return send(res, 200, { ok: true });
+      }
+      if (parts[2] === "void") {
+        if (!["draft", "sent"].includes(inv.status)) throw new HttpError(409, "A paid invoice can't be voided. Record a refund as an expense instead.");
+        update("invoices", inv.id, { status: "void" });
+        logActivity(user.id, `${user.name} voided invoice ${inv.number}`, "manager");
+        return send(res, 200, { ok: true });
+      }
+      if (!["draft", "sent"].includes(inv.status)) throw new HttpError(409, "This invoice is already paid or void.");
+      const data = validate({ paid_date: { type: "date", required: true } }, await readJson(req));
+      const tx = insert("transactions", { kind: "income", date: data.paid_date, amount: inv.amount, category: inv.contract_id ? "School contracts" : "Services", description: `Invoice ${inv.number}${inv.school ? `: ${inv.school}` : ""}`, counterparty: inv.school || null, created_by: user.id });
+      update("invoices", inv.id, { status: "paid", paid_date: data.paid_date, transaction_id: tx.id });
+      logActivity(user.id, `${user.name} recorded payment of invoice ${inv.number} (R${Number(inv.amount).toLocaleString("en-ZA")})`, "manager");
+      return send(res, 200, { ok: true, transaction_id: tx.id });
+    }
+  }
   if (parts[0] === "contracts" && parts[1] === "summary" && method === "GET") return send(res, 200, M.renewalSummary(all("SELECT * FROM contracts"), localToday()));
   if (parts[0] === "contracts" && parts[1] && ["renew", "end"].includes(parts[2]) && method === "POST") {
     if (!atLeast(user, "manager")) throw new HttpError(403, "Only managers can change contracts.");

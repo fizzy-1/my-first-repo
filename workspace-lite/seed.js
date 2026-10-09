@@ -24,7 +24,7 @@ const hash = await hashPassword(demo.password);
 db.exec("BEGIN");
 for (const u of demo.tables.users) insert("users", { ...u, password_hash: hash });
 // Parents before children, so every link points at a row that exists.
-for (const table of ["leads", "contracts", "lead_notes", "transactions", "content", "meetings", "tasks", "goals", "goal_updates", "approvals", "notifications", "activity"])
+for (const table of ["leads", "contracts", "lead_notes", "transactions", "invoices", "content", "meetings", "tasks", "goals", "goal_updates", "approvals", "notifications", "activity"])
   for (const row of demo.tables[table] || []) insert(table, row);
 for (const { body, ...d } of demo.tables.documents) {
   const storage_key = `${Date.now()}-${randomBytes(4).toString("hex")}${path.extname(d.file_name)}`;
