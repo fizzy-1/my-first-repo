@@ -24,7 +24,7 @@ A small team workspace for Integral Academy that runs on one of your own compute
 | **Approvals** | Anyone can request spending approval. A manager approves or rejects it with a note. Nobody can approve their own request |
 | **Meetings** | Notes and decisions. Action items become tasks on the team's list |
 | **Documents** | Upload PDFs, images and Office files (up to 20 MB each). Files can be marked private |
-| **Team & settings** | Add people, set roles, reset passwords, deactivate leavers; set the company name and starting bank balance; download a backup |
+| **Team & settings** | Invite people by their work email, set roles, send password reset links, deactivate leavers; set the company name, company email domain and starting bank balance; download a backup |
 
 Also: **notifications** (the bell) tell people when they're assigned a task, when spending needs their decision, when their request is decided, when someone adds a note on their school, and when content is ready for review. **Search everything** from the top bar (or press <kbd>Ctrl</kbd>+<kbd>K</kbd> / <kbd>/</kbd>). The sidebar shows **badges** for your open tasks (red if any are overdue) and approvals waiting for a manager.
 
@@ -46,7 +46,7 @@ Also: **notifications** (the bell) tell people when they're assigned a task, whe
 
    A window opens showing the workspace's addresses. Keep it open while people use the workspace, and close it (or press Ctrl+C) to stop.
 3. Your browser opens <http://localhost:3000>. The first visit asks you to create the admin account.
-4. Add your team under **Team & settings**, and give each person a temporary password privately. They must choose their own password the first time they sign in.
+4. Add your team under **Team & settings** (see [Adding your team](#adding-your-team)). Each person gets a personal link and creates their own password.
 
 ### Try it with demo data first
 
@@ -98,6 +98,24 @@ All settings are optional environment variables:
 | `HOST` | `0.0.0.0` | Use `127.0.0.1` to allow this computer only |
 | `DATA_DIR` | `./data` | Where the database and uploads are stored |
 | `COOKIE_SECURE` | `false` | Set to `true` when serving over HTTPS |
+| `PUBLIC_URL` | *(network address)* | The address teammates use, for invite and reset links, e.g. `https://workspace.integralacademy.co.za` |
+
+## Adding your team
+
+Everyone signs in with their **work email** (for example `thabo@integralacademy.co.za`) and **a password they create themselves**. The admin never sets or sees anyone's password.
+
+1. An admin opens **Team & settings → Add person** and enters the person's name, work email and role.
+2. The workspace shows a personal **invite link**. Click **Email it** to send it from your own email, or **Copy link** to send it on WhatsApp or Teams.
+3. The person opens the link, sees their email, creates a password (at least 10 characters, with letters and a number) and is signed in. You get a notification when they've joined.
+4. From then on they sign in with their work email and that password.
+
+Invite links work once and expire after 7 days. Until someone joins, the Team list shows them as **Invited**. To send a fresh link, click their row and choose **New invite link**; any earlier link stops working.
+
+**Only company emails.** Under **Workspace settings**, **Company email domain** (for example `integralacademy.co.za`) limits the team to addresses at that domain. It's filled in automatically from the first admin's email, unless that's a personal address such as Gmail. Leave it empty to allow any email.
+
+**Forgotten passwords.** An admin clicks the person's row and chooses **Password reset link**, then sends it the same way. The link works once, for 2 days. The old password keeps working until they choose a new one, and choosing one signs them out everywhere else.
+
+**The link's address.** When you add people on the computer running the workspace, links use its network address (the one the start window shows), so they open on teammates' computers. If the team reaches the workspace another way, such as through Tailscale or a web address, set `PUBLIC_URL` to that address (see [Settings](#settings)).
 
 ## Signing in
 
@@ -111,8 +129,9 @@ All settings are optional environment variables:
 - Repeated failed sign-ins are slowed down: an account locks for 15 minutes after 5 wrong passwords.
 - Every permission check runs on the server; the browser only hides buttons.
 - Members can't see finance, other people's approval requests, private documents, or money-related activity.
-- Passwords set by an admin are temporary. The person must choose their own at their next sign-in, so the admin never knows it.
-- If someone forgets their password, an admin sets a new temporary one under **Team & settings**.
+- Everyone creates their own password from a one-time invite link, so no admin ever knows it. Links are stored only as a fingerprint (hash), expire, and stop working once used or when a newer one is made.
+- If someone forgets their password, an admin sends them a one-time reset link from **Team & settings**.
+- With a company email domain set, only addresses at that domain can be added to the team.
 
 ## Online preview
 

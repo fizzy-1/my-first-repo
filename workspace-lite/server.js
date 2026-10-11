@@ -99,6 +99,34 @@ function currentUser(req) {
 
 const DUMMY_HASH = await hashPassword(randomBytes(12).toString("hex"));
 
+// ── Invite and reset links: people create their own password; an admin never sets or sees one ──
+const LINK_DAYS = { invite: 7, reset: 2 };
+const lanAddresses = () => Object.values(os.networkInterfaces()).flat().filter((a) => a && a.family === "IPv4" && !a.internal).map((a) => `http://${a.address}:${PORT}`);
+/** The address teammates should open: PUBLIC_URL if set, else the network address when the admin is on this computer. */
+function publicBase(req) {
+  if (process.env.PUBLIC_URL) return process.env.PUBLIC_URL.replace(/\/+$/, "");
+  const host = String(req.headers.host || `localhost:${PORT}`);
+  if (/^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i.test(host)) return lanAddresses()[0] || `http://${host}`;
+  const https = SECURE_COOKIE || req.headers["x-forwarded-proto"] === "https";
+  return `${https ? "https" : "http"}://${host}`;
+}
+function createAccountLink(req, userId, purpose, createdBy) {
+  run("DELETE FROM account_links WHERE user_id = ?", userId); // only the newest link works
+  const token = randomBytes(32).toString("base64url");
+  const expires_at = new Date(Date.now() + LINK_DAYS[purpose] * 86400000).toISOString();
+  run("INSERT INTO account_links (token_hash, user_id, purpose, expires_at, created_by) VALUES (?, ?, ?, ?, ?)", sha256(token), userId, purpose, expires_at, createdBy);
+  return { link: `${publicBase(req)}/#/join/${token}`, expires_at, purpose };
+}
+function findAccountLink(token) {
+  if (!/^[A-Za-z0-9_-]{20,100}$/.test(String(token || ""))) return null;
+  return get("SELECT l.*, u.name, u.email, u.active FROM account_links l JOIN users u ON u.id = l.user_id WHERE l.token_hash = ? AND l.expires_at > ?", sha256(token), new Date().toISOString()) || null;
+}
+const LINK_GONE = "This link has expired or has already been used. Ask an admin for a new one.";
+function checkCompanyEmail(email) {
+  const domain = getSetting("email_domain", "");
+  if (!M.emailInDomain(email, domain)) throw new HttpError(422, `Use an @${domain} email address.`, { email: `Must be an @${domain} address.` });
+}
+
 // Sign-in throttle: 5 failures per email or 20 per IP in 15 minutes.
 const failures = new Map();
 function throttled(keys) {
@@ -765,6 +793,7 @@ async function api(req, res, url) {
       if (problem) throw new HttpError(422, problem, { password: problem });
       const info = run("INSERT INTO users (name, email, password_hash, role, job_title) VALUES (?, ?, ?, 'admin', 'Founder')", data.name, data.email, await hashPassword(body.password));
       if (data.company) setSetting("company_name", data.company);
+      setSetting("email_domain", M.companyDomainOf(data.email));
       logActivity(Number(info.lastInsertRowid), `${data.name} set up the workspace`);
       createSession(req, res, Number(info.lastInsertRowid));
       return send(res, 201, { ok: true });
@@ -776,7 +805,7 @@ async function api(req, res, url) {
       if (throttled(keys)) throw new HttpError(429, "Too many sign-in attempts. Wait 15 minutes and try again.");
       const user = get("SELECT * FROM users WHERE email = ?", email);
       // Always run one hash so a wrong email takes as long as a wrong password.
-      const passwordOk = await verifyPassword(String(body.password || ""), user ? user.password_hash : DUMMY_HASH);
+      const passwordOk = await verifyPassword(String(body.password || ""), user && user.password_hash ? user.password_hash : DUMMY_HASH);
       const ok = user && user.active && passwordOk;
       if (!ok) {
         recordFailure(keys);
@@ -784,6 +813,31 @@ async function api(req, res, url) {
       }
       createSession(req, res, user.id, body.keep !== false);
       return send(res, 200, { ok: true });
+    }
+    // Opening an invite or reset link: show who it's for, then let them choose their password.
+    if (parts[1] === "link" && parts[2]) {
+      const keys = [`ip:${req.socket.remoteAddress}`];
+      if (throttled(keys)) throw new HttpError(429, "Too many attempts. Wait 15 minutes and try again.");
+      const found = findAccountLink(parts[2]);
+      if (!found || !found.active) {
+        recordFailure(keys);
+        throw new HttpError(404, LINK_GONE);
+      }
+      if (method === "GET") return send(res, 200, { name: found.name, email: found.email, purpose: found.purpose, company: getSetting("company_name", "Integral Academy") });
+      if (method === "POST") {
+        const body = await readJson(req);
+        const problem = passwordProblem(body.password);
+        if (problem) throw new HttpError(422, problem, { password: problem });
+        run("UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?", await hashPassword(body.password), found.user_id);
+        run("DELETE FROM account_links WHERE user_id = ?", found.user_id);
+        run("DELETE FROM sessions WHERE user_id = ?", found.user_id); // a reset signs out every other device
+        if (found.purpose === "invite") {
+          logActivity(found.user_id, `${found.name} joined the workspace`);
+          notify(found.created_by, { id: found.user_id }, `${found.name} created their password and joined the workspace.`, "team");
+        }
+        createSession(req, res, found.user_id, body.keep !== false);
+        return send(res, 200, { ok: true });
+      }
     }
     if (parts[1] === "logout" && method === "POST") {
       const token = parseCookies(req).ws_session;
@@ -902,37 +956,44 @@ async function api(req, res, url) {
   // ── Team (everyone can list names; admins manage) ──
   if (parts[0] === "users") {
     if (method === "GET") {
-      return send(res, 200, all("SELECT id, name, email, role, job_title, active, created_at FROM users ORDER BY active DESC, name"));
+      const links = atLeast(user, "admin") ? new Map(all("SELECT user_id, purpose, expires_at FROM account_links WHERE expires_at > ?", new Date().toISOString()).map((l) => [l.user_id, l])) : new Map();
+      return send(res, 200, all("SELECT id, name, email, role, job_title, active, created_at, password_hash <> '' AS joined FROM users ORDER BY active DESC, name")
+        .map((u) => ({ ...u, joined: Boolean(u.joined), link: links.get(u.id) ? { purpose: links.get(u.id).purpose, expires_at: links.get(u.id).expires_at } : null })));
     }
     if (!atLeast(user, "admin")) throw new HttpError(403, "Only an admin can manage the team.");
     const spec = { name: { type: "text", required: true, max: 120 }, email: { type: "email", required: true }, role: { type: "enum", values: ["admin", "manager", "member"], required: true }, job_title: { type: "text", max: 120 }, active: { type: "bool" } };
     if (method === "POST" && !parts[1]) {
-      const body = await readJson(req);
-      const data = validate(spec, body);
-      const problem = passwordProblem(body.password);
-      if (problem) throw new HttpError(422, problem, { password: problem });
+      const data = validate(spec, await readJson(req));
+      checkCompanyEmail(data.email);
       if (get("SELECT id FROM users WHERE email = ?", data.email)) throw new HttpError(422, "That email is already in use.", { email: "Already in use." });
-      const created = insert("users", { ...data, active: data.active ?? 1, password_hash: await hashPassword(body.password), must_change_password: 1 });
+      const created = insert("users", { ...data, active: data.active ?? 1, password_hash: "" }); // no password until they open their invite
       logActivity(user.id, `${user.name} added ${created.name} to the team`);
-      return send(res, 201, { id: created.id });
+      return send(res, 201, { id: created.id, ...createAccountLink(req, created.id, "invite", user.id) });
     }
     const id = Number(parts[1]);
     const target = get("SELECT * FROM users WHERE id = ?", id);
     if (!target) throw new HttpError(404, "Not found.");
+    // A fresh invite (not joined yet) or password reset link; any earlier link stops working.
+    if (parts[2] === "link" && method === "POST") {
+      if (!target.active) throw new HttpError(422, "Turn this person's access back on first.");
+      const purpose = target.password_hash ? "reset" : "invite";
+      logActivity(user.id, purpose === "reset" ? `${user.name} made a password reset link for ${target.name}` : `${user.name} made a new invite link for ${target.name}`, "manager");
+      return send(res, 200, createAccountLink(req, id, purpose, user.id));
+    }
     if (method === "PATCH") {
-      const body = await readJson(req);
-      const data = validate(spec, body, { partial: true });
+      const data = validate(spec, await readJson(req), { partial: true });
       if (id === user.id && (data.active === 0 || (data.role && data.role !== "admin"))) throw new HttpError(422, "You can't deactivate or demote yourself.");
       const otherAdmins = get("SELECT COUNT(*) AS n FROM users WHERE role = 'admin' AND active = 1 AND id <> ?", id).n;
       if (target.role === "admin" && (data.active === 0 || (data.role && data.role !== "admin")) && otherAdmins === 0) throw new HttpError(422, "The workspace needs at least one active admin.");
-      if (body.password) {
-        const problem = passwordProblem(body.password);
-        if (problem) throw new HttpError(422, problem, { password: problem });
-        data.password_hash = await hashPassword(body.password);
-        data.must_change_password = 1;
+      if (data.email && data.email.toLowerCase() !== target.email.toLowerCase()) {
+        checkCompanyEmail(data.email);
+        if (get("SELECT id FROM users WHERE email = ? AND id <> ?", data.email, id)) throw new HttpError(422, "That email is already in use.", { email: "Already in use." });
       }
       update("users", id, data);
-      if (data.active === 0 || data.password_hash) run("DELETE FROM sessions WHERE user_id = ?", id);
+      if (data.active === 0) {
+        run("DELETE FROM sessions WHERE user_id = ?", id);
+        run("DELETE FROM account_links WHERE user_id = ?", id);
+      }
       logActivity(user.id, `${user.name} updated ${target.name}'s account`);
       return send(res, 200, { ok: true });
     }
@@ -955,10 +1016,16 @@ async function api(req, res, url) {
 
   // ── Settings (admin) ──
   if (parts[0] === "settings") {
-    if (method === "GET") return send(res, 200, { company_name: getSetting("company_name", "Integral Academy"), opening_balance: Number(getSetting("opening_balance", "0")), opening_date: getSetting("opening_date", ""), last_backup_at: getSetting("last_backup_at") });
+    if (method === "GET") return send(res, 200, { company_name: getSetting("company_name", "Integral Academy"), email_domain: getSetting("email_domain", ""), opening_balance: Number(getSetting("opening_balance", "0")), opening_date: getSetting("opening_date", ""), last_backup_at: getSetting("last_backup_at") });
     if (method === "PUT") {
       if (!atLeast(user, "admin")) throw new HttpError(403, "Only an admin can change settings.");
-      const data = validate({ company_name: { type: "text", max: 120 }, opening_balance: { type: "money" }, opening_date: { type: "date" } }, await readJson(req), { partial: true });
+      const body = await readJson(req);
+      const data = validate({ company_name: { type: "text", max: 120 }, opening_balance: { type: "money" }, opening_date: { type: "date" } }, body, { partial: true });
+      if ("email_domain" in body) {
+        const domain = M.normalizeDomain(body.email_domain);
+        if (domain === null) throw new HttpError(422, "Enter just the part after the @, like integralacademy.co.za.", { email_domain: "Enter a domain like integralacademy.co.za." });
+        data.email_domain = domain;
+      }
       for (const [k, v] of Object.entries(data)) setSetting(k, v ?? "");
       logActivity(user.id, `${user.name} updated workspace settings`);
       return send(res, 200, { ok: true });
@@ -1274,7 +1341,7 @@ server.listen(PORT, HOST, () => {
   if (process.argv.includes("--open")) openBrowser(LOCAL_URL);
   console.log(`Integral Workspace Lite is running on ${LOCAL_URL}`);
   if (HOST === "0.0.0.0") {
-    const addresses = Object.values(os.networkInterfaces()).flat().filter((a) => a && a.family === "IPv4" && !a.internal).map((a) => `http://${a.address}:${PORT}`);
+    const addresses = lanAddresses();
     if (addresses.length) console.log(`Others on your network can use: ${addresses.join("  or  ")}`);
   }
   console.log("Keep this window open while the team is using the workspace. Press Ctrl+C to stop it.");

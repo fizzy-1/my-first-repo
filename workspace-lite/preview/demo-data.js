@@ -129,6 +129,7 @@
     const settingsExtra = {
       invoice_from: "Integral Academy (Pty) Ltd\nWorkshop17, 173 Oxford Road\nRosebank, Johannesburg 2196",
       invoice_bank: "FNB Business Cheque\nAccount 62 0000 0000\nBranch code 250655\nReference: invoice number",
+      email_domain: "integralacademy.co.za",
     };
     const budgets = [["Salaries", 95000], ["Rent", 6500], ["Software", 4500], ["Marketing", 12000], ["Travel", 3000], ["Equipment", 3000]].map(([category, monthly_amount]) => ({ category, monthly_amount }));
 

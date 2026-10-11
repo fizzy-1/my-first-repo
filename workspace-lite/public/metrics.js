@@ -236,7 +236,23 @@
     });
   }
 
+  // ── Accounts: only addresses at the company's email domain can be added to the team ──
+  const PUBLIC_MAIL = new Set(["gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "live.com", "msn.com", "yahoo.com", "yahoo.co.za", "icloud.com", "me.com", "aol.com", "proton.me", "protonmail.com", "mail.com", "gmx.com", "webmail.co.za", "mweb.co.za", "telkomsa.net", "vodamail.co.za", "afrihost.co.za"]);
+  /** "@IntegralAcademy.co.za " → "integralacademy.co.za"; "" when empty; null when it isn't a domain. */
+  function normalizeDomain(value) {
+    const d = String(value ?? "").trim().toLowerCase().replace(/^@/, "");
+    if (!d) return "";
+    return /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(d) ? d : null;
+  }
+  /** The company domain to suggest from the first admin's email, unless it's a personal mail service. */
+  function companyDomainOf(email) {
+    const d = normalizeDomain(String(email || "").split("@")[1]);
+    return d && !PUBLIC_MAIL.has(d) ? d : "";
+  }
+  const emailInDomain = (email, domain) => !domain || String(email || "").trim().toLowerCase().endsWith(`@${domain}`);
+
   const api = {
+    normalizeDomain, companyDomainOf, emailInDomain,
     isoDay, addDays, addMonths, lastDay, monthsBack, daysBetween,
     contractState, arrOn, schoolsOn, learnersOn, renewalSummary, invoiceState, invoiceSummary, nextInvoiceNumber,
     GOAL_METRICS, goalProgress, budgetVsActual, forecast, statsMatrix, teamMatrix,

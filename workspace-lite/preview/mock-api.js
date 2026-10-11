@@ -57,7 +57,7 @@
   const files = {}; // storage_key → { kind: "text" | "dataurl", data }
 
   function emptyDb() {
-    const out = { seq: {}, settings: {}, session: null, files: {}, budgets: [] };
+    const out = { seq: {}, settings: {}, session: null, files: {}, budgets: [], links: [] };
     for (const t of TABLES) out[t] = [];
     return out;
   }
@@ -709,6 +709,22 @@
     if (!byId("leads", c.lead_id)) throw new HttpError(422, "Choose a school.", { lead_id: "Choose a school." });
     if (c.end_date <= c.start_date) throw new HttpError(422, "The end date must be after the start date.", { end_date: "Must be after the start date." });
   }
+  // Invite and reset links (the preview keeps them in this browser; the link only opens here).
+  const LINK_DAYS = { invite: 7, reset: 2 };
+  const LINK_GONE = "This link has expired or has already been used. Ask an admin for a new one.";
+  function createLink(userId, purpose, createdBy) {
+    db.links = db.links.filter((l) => l.user_id !== userId);
+    const bytes = crypto.getRandomValues(new Uint8Array(24));
+    const token = btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    const expires_at = new Date(Date.now() + LINK_DAYS[purpose] * 86400000).toISOString();
+    db.links.push({ token, user_id: userId, purpose, expires_at, created_by: createdBy });
+    return { link: `${location.href.split("#")[0]}#/join/${token}`, expires_at, purpose };
+  }
+  const findLink = (token) => db.links.find((l) => l.token === token && l.expires_at > nowIso()) || null;
+  function checkCompanyEmail(email) {
+    const domain = getSetting("email_domain", "");
+    if (!M.emailInDomain(email, domain)) throw new HttpError(422, `Use an @${domain} email address.`, { email: `Must be an @${domain} address.` });
+  }
   function checkInvoice(i) {
     if (!byId("leads", i.lead_id)) throw new HttpError(422, "Choose a school.", { lead_id: "Choose a school." });
     if (i.due_date < i.issue_date) throw new HttpError(422, "The due date can't be before the invoice date.", { due_date: "Must be on or after the invoice date." });
@@ -1013,6 +1029,7 @@
         if (problem) throw new HttpError(422, problem, { password: problem });
         const u = insert("users", { name: data.name, email: data.email, role: "admin", job_title: "Founder", password: input.password });
         if (data.company) setSetting("company_name", data.company);
+        setSetting("email_domain", M.companyDomainOf(data.email));
         logActivity(u.id, `${data.name} set up the workspace`);
         db.session = u.id;
         return [201, { ok: true }];
@@ -1021,9 +1038,28 @@
         const input = body();
         const email = String(input.email || "").trim().toLowerCase();
         const u = db.users.find((x) => x.email.toLowerCase() === email);
-        if (!u || !u.active || u.password !== String(input.password || "")) throw new HttpError(401, "Invalid email or password.");
+        if (!u || !u.active || !u.password || u.password !== String(input.password || "")) throw new HttpError(401, "Invalid email or password.");
         db.session = u.id;
         return [200, { ok: true }];
+      }
+      if (parts[1] === "link" && parts[2]) {
+        const found = findLink(parts[2]);
+        const target = found && byId("users", found.user_id);
+        if (!target || !target.active) throw new HttpError(404, LINK_GONE);
+        if (method === "GET") return [200, { name: target.name, email: target.email, purpose: found.purpose, company: getSetting("company_name", "Integral Academy") }];
+        if (method === "POST") {
+          const input = body();
+          const problem = passwordProblem(input.password);
+          if (problem) throw new HttpError(422, problem, { password: problem });
+          Object.assign(target, { password: input.password, must_change_password: 0 });
+          db.links = db.links.filter((l) => l.user_id !== target.id);
+          if (found.purpose === "invite") {
+            logActivity(target.id, `${target.name} joined the workspace`);
+            notify(found.created_by, { id: target.id }, `${target.name} created their password and joined the workspace.`, "team");
+          }
+          db.session = target.id;
+          return [200, { ok: true }];
+        }
       }
       if (parts[1] === "logout" && method === "POST") {
         db.session = null;
@@ -1242,45 +1278,57 @@
       }
     }
     if (parts[0] === "users") {
-      if (method === "GET") return [200, sortBy(db.users, (a, b) => b.active - a.active, (a, b) => cmp(a.name, b.name)).map((u) => ({ id: u.id, name: u.name, email: u.email, role: u.role, job_title: u.job_title, active: u.active, created_at: u.created_at }))];
+      if (method === "GET") {
+        const live = (id) => atLeast(user, "admin") && db.links.find((l) => l.user_id === id && l.expires_at > nowIso());
+        return [200, sortBy(db.users, (a, b) => b.active - a.active, (a, b) => cmp(a.name, b.name)).map((u) => {
+          const l = live(u.id);
+          return { id: u.id, name: u.name, email: u.email, role: u.role, job_title: u.job_title, active: u.active, created_at: u.created_at, joined: Boolean(u.password), link: l ? { purpose: l.purpose, expires_at: l.expires_at } : null };
+        })];
+      }
       if (!atLeast(user, "admin")) throw new HttpError(403, "Only an admin can manage the team.");
       const spec = { name: { type: "text", required: true, max: 120 }, email: { type: "email", required: true }, role: { type: "enum", values: ["admin", "manager", "member"], required: true }, job_title: { type: "text", max: 120 }, active: { type: "bool" } };
       if (method === "POST" && !parts[1]) {
-        const input = body();
-        const data = validate(spec, input);
-        const problem = passwordProblem(input.password);
-        if (problem) throw new HttpError(422, problem, { password: problem });
+        const data = validate(spec, body());
+        checkCompanyEmail(data.email);
         if (db.users.some((u) => u.email.toLowerCase() === data.email)) throw new HttpError(422, "That email is already in use.", { email: "Already in use." });
-        const created = insert("users", { ...data, active: data.active ?? 1, password: input.password, must_change_password: 1 });
+        const created = insert("users", { ...data, active: data.active ?? 1, password: "" });
         logActivity(user.id, `${user.name} added ${created.name} to the team`);
-        return [201, { id: created.id }];
+        return [201, { id: created.id, ...createLink(created.id, "invite", user.id) }];
       }
       const target = byId("users", parts[1]);
       if (!target) throw new HttpError(404, "Not found.");
+      if (parts[2] === "link" && method === "POST") {
+        if (!target.active) throw new HttpError(422, "Turn this person's access back on first.");
+        const purpose = target.password ? "reset" : "invite";
+        logActivity(user.id, purpose === "reset" ? `${user.name} made a password reset link for ${target.name}` : `${user.name} made a new invite link for ${target.name}`, "manager");
+        return [200, createLink(target.id, purpose, user.id)];
+      }
       if (method === "PATCH") {
         const input = body();
         const data = validate(spec, input, { partial: true });
         if (target.id === user.id && (data.active === 0 || (data.role && data.role !== "admin"))) throw new HttpError(422, "You can't deactivate or demote yourself.");
         const otherAdmins = db.users.filter((u) => u.role === "admin" && u.active && u.id !== target.id).length;
         if (target.role === "admin" && (data.active === 0 || (data.role && data.role !== "admin")) && otherAdmins === 0) throw new HttpError(422, "The workspace needs at least one active admin.");
+        if (data.email && data.email !== target.email.toLowerCase()) checkCompanyEmail(data.email);
         if (data.email && db.users.some((u) => u.id !== target.id && u.email.toLowerCase() === data.email)) throw new HttpError(422, "That email is already in use.", { email: "Already in use." });
-        if (input.password) {
-          const problem = passwordProblem(input.password);
-          if (problem) throw new HttpError(422, problem, { password: problem });
-          data.password = input.password;
-          data.must_change_password = 1;
-        }
         Object.assign(target, data);
+        if (data.active === 0) db.links = db.links.filter((l) => l.user_id !== target.id);
         logActivity(user.id, `${user.name} updated ${target.name}'s account`);
         return [200, { ok: true }];
       }
     }
 
     if (parts[0] === "settings") {
-      if (method === "GET") return [200, { company_name: getSetting("company_name", "Integral Academy"), opening_balance: Number(getSetting("opening_balance", "0")) || 0, opening_date: getSetting("opening_date", ""), last_backup_at: getSetting("last_backup_at") }];
+      if (method === "GET") return [200, { company_name: getSetting("company_name", "Integral Academy"), email_domain: getSetting("email_domain", ""), opening_balance: Number(getSetting("opening_balance", "0")) || 0, opening_date: getSetting("opening_date", ""), last_backup_at: getSetting("last_backup_at") }];
       if (method === "PUT") {
         if (!atLeast(user, "admin")) throw new HttpError(403, "Only an admin can change settings.");
-        const data = validate({ company_name: { type: "text", max: 120 }, opening_balance: { type: "money" }, opening_date: { type: "date" } }, body(), { partial: true });
+        const input = body();
+        const data = validate({ company_name: { type: "text", max: 120 }, opening_balance: { type: "money" }, opening_date: { type: "date" } }, input, { partial: true });
+        if ("email_domain" in input) {
+          const domain = M.normalizeDomain(input.email_domain);
+          if (domain === null) throw new HttpError(422, "Enter just the part after the @, like integralacademy.co.za.", { email_domain: "Enter a domain like integralacademy.co.za." });
+          data.email_domain = domain;
+        }
         for (const [k, v] of Object.entries(data)) setSetting(k, v ?? "");
         logActivity(user.id, `${user.name} updated workspace settings`);
         return [200, { ok: true }];

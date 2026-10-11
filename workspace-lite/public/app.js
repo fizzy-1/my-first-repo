@@ -2024,19 +2024,36 @@ ${inv.notes ? `<p>${lines(inv.notes)}</p>` : ""}${details.invoice_bank ? `<div><
     const admin = atLeast(user, "admin");
     const settings = useResource(admin ? "/api/settings" : null);
     const [editing, setEditing] = useState(null);
+    const [invite, setInvite] = useState(null); // { link, expires_at, purpose, name, email } just made
     const item = editing && editing !== "new" ? editing : null;
     const hosted = Boolean(window.WS_HOSTED);
+    const domain = settings.data && settings.data.email_domain;
+    useEffect(() => {
+      reloadUsers(); // fresh list, and again when you come back to this tab: shows who has joined
+      window.addEventListener("focus", reloadUsers);
+      return () => window.removeEventListener("focus", reloadUsers);
+    }, [reloadUsers]);
     const fields = hosted ? [
       { name: "job_title", label: "Job title", type: "text", full: true },
       ...(item && item.id !== user.id ? [{ name: "active", label: "Active", type: "checkbox", hint: "Inactive people can't use the workspace. To remove someone for good, also take them off the page's Share menu." }] : []),
     ] : [
       { name: "name", label: "Full name", type: "text", required: true },
-      { name: "email", label: "Email (used to sign in)", type: "email", required: true },
+      { name: "email", label: "Work email (used to sign in)", type: "email", required: true, hint: domain ? `Must be an @${domain} address.` : undefined },
       { name: "job_title", label: "Job title", type: "text" },
       { name: "role", label: "Role", type: "select", options: META.role, default: "member", required: true, hint: "Members do the work · Managers also see finance and approve spending · Admins also manage people and settings." },
-      { name: "password", label: item ? "New password" : "Temporary password", type: "password", required: !item, autoComplete: "new-password", hint: item ? "Leave empty to keep their current password. Setting one signs them out and they'll choose a new one at next sign-in." : "At least 10 characters with a number. Share it privately — they'll choose their own when they first sign in." },
       ...(item ? [{ name: "active", label: "Active", type: "checkbox", hint: "Inactive people can't sign in" }] : []),
     ];
+    const newLink = async (u) => {
+      const r = await api("POST", `/api/users/${u.id}/link`);
+      setEditing(null);
+      setInvite({ ...r, name: u.name, email: u.email });
+      reloadUsers();
+    };
+    const statusBadge = (u) => {
+      if (!u.active) return html`<${Badge} dot>Inactive<//>`;
+      if (hosted || u.joined) return html`<${Badge} tone="success" dot>Active<//>`;
+      return u.link ? html`<${Badge} tone="warning" dot>Invited<//>` : html`<${Badge} tone="danger" dot>Invite expired<//>`;
+    };
     return html`<${Fragment}>
       <${PageHeader} title="Team" description="Who's on the team and what they can do." actions=${admin && !hosted && html`<${Button} variant="primary" icon="user-plus" onClick=${() => setEditing("new")}>Add person<//>`} />
       <div style=${{ display: "grid", gap: 16 }}>
@@ -2050,7 +2067,7 @@ ${inv.notes ? `<p>${lines(inv.notes)}</p>` : ""}${details.invoice_bank ? `<div><
             { key: "name", header: "Name", sort: (u) => u.name, render: (u) => html`<${UserChip} name=${u.name} subtitle=${u.job_title} />` },
             ...(hosted ? [] : [{ key: "email", header: "Email", hideOnMobile: true, render: (u) => html`<a href=${`mailto:${u.email}`} onClick=${(e) => e.stopPropagation()}>${u.email}</a>` }]),
             { key: "role", header: "Role", sort: (u) => RANK[u.role], render: (u) => html`<${StatusBadge} meta=${META.role} value=${u.role} />` },
-            { key: "status", header: "Status", hideOnMobile: true, render: (u) => (u.active ? html`<${Badge} tone="success" dot>Active<//>` : html`<${Badge} dot>Inactive<//>`) },
+            { key: "status", header: "Status", hideOnMobile: true, render: statusBadge },
           ]} /><//>
         ${admin && html`<${Loaded} res=${settings}>${(s) => html`<${SettingsCard} initial=${s} onSaved=${(v) => { setCompany(v.company_name); settings.reload(); toast("Settings saved"); }} />`}<//>`}
         ${admin && html`<${Section} title="Backups" description=${settings.data && settings.data.last_backup_at ? `Last downloaded ${fmt.relative(settings.data.last_backup_at)}.` : "No backup downloaded yet."}
@@ -2060,18 +2077,55 @@ ${inv.notes ? `<p>${lines(inv.notes)}</p>` : ""}${details.invoice_bank ? `<div><
           <p style=${{ margin: "8px 0 0", fontSize: 13, color: "var(--muted-fg)" }}>To restore: stop the workspace, unzip the backup inside the workspace folder (replacing the <code>data</code> folder), and start it again.</p>`}
         <//>`}
       </div>
-      <${FormModal} open=${Boolean(editing)} onClose=${() => setEditing(null)} title=${item ? `Edit ${item.name}` : "Add a person"} fields=${fields} initial=${item ? { ...item, active: Boolean(item.active) } : null} submitLabel=${item ? "Save" : "Add person"}
+      <${FormModal} open=${Boolean(editing)} onClose=${() => setEditing(null)} title=${item ? `Edit ${item.name}` : "Add a person"} fields=${fields} initial=${item ? { ...item, active: Boolean(item.active) } : null} submitLabel=${item ? "Save" : "Add and get invite link"}
+        description=${item ? "" : "They'll get a personal link to create their own password. You never see or set it."}
+        extraFooter=${item && !hosted && item.active && html`<${Button} variant="ghost" icon="link" onClick=${() => newLink(item)}>${item.joined ? "Password reset link" : "New invite link"}<//>`}
         onSubmit=${async (v) => {
-          if (item) await api("PATCH", `/api/users/${item.id}`, v);
-          else await api("POST", "/api/users", v);
-          setEditing(null);
-          toast(item ? "Saved" : `${v.name} can now sign in`);
+          if (item) {
+            await api("PATCH", `/api/users/${item.id}`, v);
+            setEditing(null);
+            toast("Saved");
+          } else {
+            const r = await api("POST", "/api/users", v);
+            setEditing(null);
+            setInvite({ ...r, name: v.name, email: v.email });
+          }
           reloadUsers();
         }} />
+      ${invite && html`<${InviteLinkModal} invite=${invite} company=${settings.data ? settings.data.company_name : "the workspace"} onClose=${() => setInvite(null)} />`}
+    <//>`;
+  }
+  /** Shows a new invite or reset link once, with ways to send it. Links are stored hashed, so this is the only time it's visible. */
+  function InviteLinkModal({ invite, company, onClose }) {
+    const { toast } = useApp();
+    const reset = invite.purpose === "reset";
+    const first = invite.name.split(" ")[0];
+    const days = Math.round((new Date(invite.expires_at) - Date.now()) / 86400000);
+    const subject = reset ? `Reset your ${company} workspace password` : `Join the ${company} team workspace`;
+    const message = reset
+      ? `Hi ${first},\n\nHere's your link to choose a new password for the ${company} workspace:\n${invite.link}\n\nIt works once, for the next ${days} days.`
+      : `Hi ${first},\n\nYou've been added to the ${company} team workspace. Open this link to create your password:\n${invite.link}\n\nAfter that, sign in with ${invite.email} and your password. The link works once, for the next ${days} days.`;
+    const copy = async () => {
+      try {
+        await navigator.clipboard.writeText(invite.link);
+      } catch {
+        const box = document.getElementById("invite-link");
+        box.select();
+        document.execCommand("copy");
+      }
+      toast("Link copied");
+    };
+    return html`<${Modal} open=${true} onClose=${onClose} title=${reset ? `Password reset link for ${invite.name}` : `Invite ${invite.name}`} width=${560}
+      footer=${html`${window.WS_PREVIEW && html`<${Button} variant="ghost" onClick=${() => { onClose(); window.location.hash = invite.link.slice(invite.link.indexOf("#")); }}>Try it: open the link here<//>`}<span style=${{ flex: 1 }} />
+        <a href=${`mailto:${invite.email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(message)}`} style=${{ display: "inline-flex", alignItems: "center", gap: 8, height: 36, padding: "0 14px", borderRadius: 8, border: "1px solid var(--border)", color: "var(--fg)", textDecoration: "none", fontSize: 13.5, fontWeight: 500 }}><${Icon} name="mail" />Email it<//>
+        <${Button} variant="primary" icon="copy" onClick=${copy}>Copy link<//>`}>
+      <p style=${{ margin: 0, fontSize: 13.5 }}>${reset ? `Send this link to ${first}. It lets them choose a new password; their old one keeps working until they do.` : `Send this link to ${first} (email, WhatsApp or Teams). They open it, create their own password, and from then on sign in with ${invite.email}.`}</p>
+      <${TextInput} id="invite-link" value=${invite.link} onChange=${() => {}} readOnly=${true} onFocus=${(e) => e.target.select()} aria-label="Invite link" />
+      <${Muted}>The link works once and expires in ${days} days. Only the newest link for a person works. If it's lost, make a new one from their row on this page.<//>
     <//>`;
   }
   function SettingsCard({ initial, onSaved }) {
-    const [v, setV] = useState({ company_name: initial.company_name || "", opening_balance: initial.opening_balance ?? "", opening_date: initial.opening_date || "" });
+    const [v, setV] = useState({ company_name: initial.company_name || "", email_domain: initial.email_domain || "", opening_balance: initial.opening_balance ?? "", opening_date: initial.opening_date || "" });
     const [errors, setErrors] = useState({});
     const [busy, setBusy] = useState(false);
     const set = (k) => (x) => setV((s) => ({ ...s, [k]: x }));
@@ -2090,6 +2144,7 @@ ${inv.notes ? `<p>${lines(inv.notes)}</p>` : ""}${details.invoice_bank ? `<div><
     return html`<${Section} title="Workspace settings" actions=${html`<${Button} variant="primary" disabled=${busy} onClick=${save}>${busy ? "Saving…" : "Save settings"}<//>`}>
       <div class="form-grid">
         <${Field} id="s-company" label="Company name" error=${errors.company_name}><${TextInput} id="s-company" value=${v.company_name} onChange=${set("company_name")} /><//>
+        <${Field} id="s-domain" label="Company email domain" error=${errors.email_domain} hint="Only addresses ending in @ this domain can be added to the team. Leave empty to allow any email."><${TextInput} id="s-domain" value=${v.email_domain} onChange=${set("email_domain")} placeholder="integralacademy.co.za" /><//>
         <${Field} id="s-balance" label="Starting bank balance (R)" error=${errors.opening_balance} hint="Your balance before the first transaction you record."><${TextInput} id="s-balance" type="number" step="0.01" min="0" value=${v.opening_balance} onChange=${set("opening_balance")} /><//>
         <${Field} id="s-date" label="Balance as at" error=${errors.opening_date}><${TextInput} id="s-date" type="date" value=${v.opening_date} onChange=${set("opening_date")} /><//>
       </div>
@@ -2254,13 +2309,13 @@ ${inv.notes ? `<p>${lines(inv.notes)}</p>` : ""}${details.invoice_bank ? `<div><
     const f = useAuthForm({ email: remembered, password: "", keep: true }, async (v) => {
       await api("POST", "/api/auth/login", v);
       try {
-        localStorage.setItem("ws-last-email", v.email.trim());
+        localStorage.setItem("ws-last-email", v.email.trim().toLowerCase());
       } catch {
         /* storage unavailable: nothing to remember */
       }
       await onSignedIn();
     });
-    return html`<${AuthFrame} company=${company} title=${remembered ? "Welcome back" : "Sign in"} subtitle="Use the email and password your admin gave you.">
+    return html`<${AuthFrame} company=${company} title=${remembered ? "Welcome back" : "Sign in"} subtitle="Use your work email and the password you created.">
       <form onSubmit=${f.submit} style=${{ display: "grid", gap: 12 }}>
         <${Field} id="email" label="Email"><${TextInput} id="email" type="email" autoComplete="username" value=${f.v.email} onChange=${f.set("email")} autoFocus=${!remembered} /><//>
         <${Field} id="password" label="Password"><${TextInput} id="password" type="password" autoComplete="current-password" value=${f.v.password} onChange=${f.set("password")} autoFocus=${Boolean(remembered)} /><//>
@@ -2268,7 +2323,7 @@ ${inv.notes ? `<p>${lines(inv.notes)}</p>` : ""}${details.invoice_bank ? `<div><
         <${Alert}>${f.error}<//>
         <${Button} type="submit" variant="primary" size="lg" disabled=${f.busy}>${f.busy ? "Signing in…" : "Sign in"}<//>
       </form>
-      <${Muted}>Forgot your password? Ask an admin to set a new one. On a shared computer, untick “Keep me signed in”.<//>
+      <${Muted}>New here? Open the invite link your admin sent you to create your password. Forgot it? Ask an admin for a reset link. On a shared computer, untick “Keep me signed in”.<//>
     <//>`;
   }
   function SetupScreen({ onDone }) {
@@ -2290,6 +2345,45 @@ ${inv.notes ? `<p>${lines(inv.notes)}</p>` : ""}${details.invoice_bank ? `<div><
         <${Alert}>${f.error && !Object.keys(f.errors).length ? f.error : ""}<//>
         <${Button} type="submit" variant="primary" size="lg" disabled=${f.busy}>${f.busy ? "Creating…" : "Create workspace"}<//>
       </form>
+    <//>`;
+  }
+
+  /** Opened from an invite or reset link: the person creates their own password and is signed in. */
+  function JoinScreen({ token, onDone }) {
+    const [info, setInfo] = useState(null); // { name, email, purpose, company } | { gone }
+    useEffect(() => {
+      api("GET", `/api/auth/link/${encodeURIComponent(token)}`).then(setInfo, (err) => setInfo({ gone: err.message }));
+    }, [token]);
+    const f = useAuthForm({ password: "", confirm: "", keep: true }, async (v, setErrors) => {
+      if (v.password !== v.confirm) {
+        setErrors({ confirm: "The passwords don't match." });
+        return;
+      }
+      await api("POST", `/api/auth/link/${encodeURIComponent(token)}`, { password: v.password, keep: v.keep });
+      try {
+        localStorage.setItem("ws-last-email", info.email);
+      } catch {
+        /* storage unavailable: nothing to remember */
+      }
+      window.location.hash = "#/dashboard";
+      await onDone();
+    });
+    const toSignIn = () => {
+      window.location.hash = "";
+    };
+    if (!info) return html`<div id="boot">Loading…</div>`;
+    if (info.gone) return html`<${AuthFrame} title="This link doesn't work any more" subtitle=${info.gone}><${Button} variant="primary" onClick=${toSignIn}>Go to sign in<//><//>`;
+    const reset = info.purpose === "reset";
+    return html`<${AuthFrame} company=${info.company} title=${reset ? "Choose a new password" : `Welcome, ${info.name.split(" ")[0]}`} subtitle=${reset ? "Your old password stops working, and you'll be signed out everywhere else." : "Create your password to join the team workspace. Only you will know it."}>
+      <form onSubmit=${f.submit} style=${{ display: "grid", gap: 12 }}>
+        <${Field} id="join-email" label="Your sign-in email"><${TextInput} id="join-email" type="email" autoComplete="username" value=${info.email} readOnly=${true} /><//>
+        <${Field} id="password" label=${reset ? "New password" : "Password"} error=${f.errors.password} hint="At least 10 characters, with letters and a number."><${TextInput} id="password" type="password" autoComplete="new-password" value=${f.v.password} onChange=${f.set("password")} autoFocus=${true} /><//>
+        <${Field} id="confirm" label="Confirm password" error=${f.errors.confirm}><${TextInput} id="confirm" type="password" autoComplete="new-password" value=${f.v.confirm} onChange=${f.set("confirm")} /><//>
+        <label style=${{ display: "flex", alignItems: "center", gap: 8, fontSize: 13.5 }}><input id="keep" type="checkbox" checked=${f.v.keep} onChange=${(e) => f.set("keep")(e.target.checked)} />Keep me signed in on this computer</label>
+        <${Alert}>${f.error && !Object.keys(f.errors).length ? f.error : ""}<//>
+        <${Button} type="submit" variant="primary" size="lg" disabled=${f.busy}>${f.busy ? "Saving…" : reset ? "Save and sign in" : "Create password and join"}<//>
+      </form>
+      <${Muted}>From now on, sign in with ${info.email} and this password.<//>
     <//>`;
   }
 
@@ -2664,6 +2758,13 @@ ${inv.notes ? `<p>${lines(inv.notes)}</p>` : ""}${details.invoice_bank ? `<div><
   function App() {
     const [status, setStatus] = useState(null); // { setupRequired, user, company }
     const [entered, setEntered] = useState(false); // hosted: past the sign-in page this visit
+    const joinToken = () => (!window.WS_HOSTED && (window.location.hash.match(/^#\/join\/([\w-]+)/) || [])[1]) || null;
+    const [join, setJoin] = useState(joinToken);
+    useEffect(() => {
+      const onHash = () => setJoin(joinToken());
+      window.addEventListener("hashchange", onHash);
+      return () => window.removeEventListener("hashchange", onHash);
+    }, []);
     const [users, setUsers] = useState([]);
     const [toasts, setToasts] = useState([]);
     const toast = useCallback((message, tone = "success") => {
@@ -2727,6 +2828,7 @@ ${inv.notes ? `<p>${lines(inv.notes)}</p>` : ""}${details.invoice_bank ? `<div><
     if (!status) body = html`<div id="boot">Loading…</div>`;
     else if (status.error) body = html`<div id="boot"><div>Can't reach the workspace server.<br />${status.error}<br /><br /><${Button} onClick=${loadStatus}>Try again<//></div></div>`;
     else if (status.setupRequired) body = html`<${SetupScreen} onDone=${loadStatus} />`;
+    else if (join) body = html`<${JoinScreen} key=${join} token=${join} onDone=${async () => { setJoin(null); await loadStatus(); }} />`;
     else if (status.user && status.hosted && !entered && !hasEntered(status.user.id))
       body = html`<${HostedSignIn} status=${status} onContinue=${async () => { setEnteredFlag(status.user.id); setEntered(true); await loadStatus(); }} />`;
     else if (!status.user && status.hosted) body = html`<${AuthFrame} company=${status.company} title="Integral Workspace" subtitle=${status.hosted.message || "Loading the workspace…"}><${Button} variant="primary" onClick=${() => window.location.reload()}>Try again<//><//>`;
