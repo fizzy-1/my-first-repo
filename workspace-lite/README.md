@@ -214,4 +214,4 @@ To publish it, run `node preview/build.mjs`. Then publish `hosted.html` with `ho
 - `Start Workspace.bat` / `Start Workspace.command`: double-click launchers that check Node.js, start the server and open the browser.
 - `public/`: the browser app (React and htm, vendored locally so it works offline), `ui.js` (components and charts) and `app.js` (screens).
 
-There's no build step. Edit a file and restart the server to see the change.
+There's no build step. Edit a file and restart the server to see the change. `npm run build` copies just the files needed to run or host the workspace into `dist/integral-workspace` (no demo pages, data or installed packages), ready to zip and hand over.
