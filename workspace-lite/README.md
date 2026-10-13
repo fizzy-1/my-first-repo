@@ -104,11 +104,11 @@ All settings are optional environment variables:
 
 ## Put it online so everyone can work from home
 
-On the office computer, only people on the office network can reach the workspace. To let the team sign in from anywhere, run it on a web host instead. The repository includes everything needed for **Render** (render.com): a `Dockerfile` here and a `render.yaml` blueprint at the top of the repository.
+On the office computer, only people on the office network can reach the workspace. To let the team sign in from anywhere, run it on a web host instead. The repository includes everything needed for **Render** (render.com): a `Dockerfile` and a `render.yaml` blueprint in this folder.
 
 1. Create a Render account and connect it to GitHub.
-2. In Render, choose **New → Blueprint** and pick this repository. If the workspace isn't on the repository's main branch yet, merge it first or choose its branch. Render reads `render.yaml` and creates the web service with a 1 GB disk for the database and files.
-3. Wait for the first deploy to finish. Render shows the address, for example `https://integral-workspace.onrender.com`.
+2. In Render, choose **New → Blueprint**, pick this repository, and set **Blueprint Path** to `workspace-lite/render.yaml`. (The `render.yaml` at the top of the repository is for the full Executive Workspace.) If the workspace isn't on the repository's main branch yet, merge it first or choose its branch. Render creates the web service with a 1 GB disk for the database and files.
+3. Wait for the first deploy to finish. Render shows the address, for example `https://integral-workspace-lite.onrender.com`.
 4. In the service's **Environment** tab, copy the value of **SETUP_CODE**. Open the address, enter the setup code and create the first admin account. Nobody else can create the admin account, because only you can see the code.
 5. Add the team under **Team & settings → Add several people**. Invite links automatically use the online address, so they work from home.
 

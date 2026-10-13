@@ -1,0 +1,26 @@
+# Online hosting for Workspace Lite on Render (render.com): New → Blueprint → pick this repository and set
+# the Blueprint Path to workspace-lite/render.yaml. (The render.yaml at the top of the repository is for the
+# full Executive Workspace.) Runs workspace-lite/ with a 1 GB persistent disk for the database and files.
+services:
+  - type: web
+    name: integral-workspace-lite
+    region: frankfurt # closest to South Africa
+    runtime: docker
+    rootDir: workspace-lite
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: starter # a persistent disk needs a paid plan; the free plan would wipe your data
+    healthCheckPath: /health
+    disk:
+      name: workspace-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: DATA_DIR
+        value: /data
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: TRUST_PROXY
+        value: "1"
+      - key: SETUP_CODE # needed to create the first admin account; find it under Environment in the Render dashboard
+        generateValue: true
