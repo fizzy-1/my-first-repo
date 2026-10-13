@@ -2398,17 +2398,18 @@ ${inv.notes ? `<p>${lines(inv.notes)}</p>` : ""}${details.invoice_bank ? `<div><
       <${Muted}>New here? Open the invite link your admin sent you to create your password. Forgot it? Ask an admin for a reset link. On a shared computer, untick “Keep me signed in”.<//>
     <//>`;
   }
-  function SetupScreen({ onDone }) {
-    const f = useAuthForm({ company: "Integral Academy", name: "", email: "", password: "", confirm: "" }, async (v, setErrors) => {
+  function SetupScreen({ needsCode, onDone }) {
+    const f = useAuthForm({ setup_code: "", company: "Integral Academy", name: "", email: "", password: "", confirm: "" }, async (v, setErrors) => {
       if (v.password !== v.confirm) {
         setErrors({ confirm: "The passwords don't match." });
         return;
       }
-      await api("POST", "/api/auth/setup", { company: v.company, name: v.name, email: v.email, password: v.password });
+      await api("POST", "/api/auth/setup", { setup_code: v.setup_code, company: v.company, name: v.name, email: v.email, password: v.password });
       await onDone();
     });
     return html`<${AuthFrame} company=${f.v.company} title="Set up your workspace" subtitle="Create the first admin account. You can add the rest of the team afterwards.">
       <form onSubmit=${f.submit} style=${{ display: "grid", gap: 12 }}>
+        ${needsCode && html`<${Field} id="setup_code" label="Setup code" error=${f.errors.setup_code} hint="Only the person setting this up has it: it's the SETUP_CODE in your hosting dashboard."><${TextInput} id="setup_code" autoComplete="off" value=${f.v.setup_code} onChange=${f.set("setup_code")} /><//>`}
         <${Field} id="company" label="Company name" error=${f.errors.company}><${TextInput} id="company" value=${f.v.company} onChange=${f.set("company")} /><//>
         <${Field} id="name" label="Your name" error=${f.errors.name}><${TextInput} id="name" autoComplete="name" value=${f.v.name} onChange=${f.set("name")} /><//>
         <${Field} id="email" label="Your email" error=${f.errors.email}><${TextInput} id="email" type="email" autoComplete="username" value=${f.v.email} onChange=${f.set("email")} /><//>
@@ -2899,7 +2900,7 @@ ${inv.notes ? `<p>${lines(inv.notes)}</p>` : ""}${details.invoice_bank ? `<div><
     let body;
     if (!status) body = html`<div id="boot">Loading…</div>`;
     else if (status.error) body = html`<div id="boot"><div>Can't reach the workspace server.<br />${status.error}<br /><br /><${Button} onClick=${loadStatus}>Try again<//></div></div>`;
-    else if (status.setupRequired) body = html`<${SetupScreen} onDone=${loadStatus} />`;
+    else if (status.setupRequired) body = html`<${SetupScreen} needsCode=${Boolean(status.setupCode)} onDone=${loadStatus} />`;
     else if (join) body = html`<${JoinScreen} key=${join} token=${join} onDone=${async () => { setJoin(null); await loadStatus(); }} />`;
     else if (status.user && status.hosted && !entered && !hasEntered(status.user.id))
       body = html`<${HostedSignIn} status=${status} onContinue=${async () => { setEnteredFlag(status.user.id); setEntered(true); await loadStatus(); }} />`;

@@ -98,7 +98,25 @@ All settings are optional environment variables:
 | `HOST` | `0.0.0.0` | Use `127.0.0.1` to allow this computer only |
 | `DATA_DIR` | `./data` | Where the database and uploads are stored |
 | `COOKIE_SECURE` | `false` | Set to `true` when serving over HTTPS |
+| `SETUP_CODE` | *(none)* | Online hosting: the code needed to create the first admin account |
+| `TRUST_PROXY` | `0` | Online hosting: number of proxies in front of the server (`1` on Render), so sign-in limits see each visitor's own address |
 | `PUBLIC_URL` | *(network address)* | The address teammates use, for invite and reset links, e.g. `https://workspace.integralacademy.co.za` |
+
+## Put it online so everyone can work from home
+
+On the office computer, only people on the office network can reach the workspace. To let the team sign in from anywhere, run it on a web host instead. The repository includes everything needed for **Render** (render.com): a `Dockerfile` here and a `render.yaml` blueprint at the top of the repository.
+
+1. Create a Render account and connect it to GitHub.
+2. In Render, choose **New → Blueprint** and pick this repository. If the workspace isn't on the repository's main branch yet, merge it first or choose its branch. Render reads `render.yaml` and creates the web service with a 1 GB disk for the database and files.
+3. Wait for the first deploy to finish. Render shows the address, for example `https://integral-workspace.onrender.com`.
+4. In the service's **Environment** tab, copy the value of **SETUP_CODE**. Open the address, enter the setup code and create the first admin account. Nobody else can create the admin account, because only you can see the code.
+5. Add the team under **Team & settings → Add several people**. Invite links automatically use the online address, so they work from home.
+
+It needs Render's paid Starter plan, because the free plan has no lasting disk and would lose your data. That's roughly US$7–8 a month at the time of writing; check render.com/pricing. Keep downloading backups from **Team & settings** as usual. To use your own address such as `workspace.integralacademy.co.za`, add it under the service's **Custom domains** and set `PUBLIC_URL` to it.
+
+The same `Dockerfile` runs on Railway, Fly.io or any server with Docker. Give it a persistent disk at `/data` and set `COOKIE_SECURE=true`, `TRUST_PROXY=1` and a long random `SETUP_CODE`.
+
+**Free alternative:** keep it on the office computer and install **Tailscale** (tailscale.com) on that computer and on everyone's laptop and phone. The team then reaches the office computer's Tailscale address from anywhere. Set `PUBLIC_URL` to that address so invite links use it. The office computer must stay on.
 
 ## Adding your team
 

@@ -3,7 +3,7 @@
 import http from "node:http";
 import os from "node:os";
 import { spawn } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createReadStream, existsSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { crc32, deflateRawSync } from "node:zlib";
@@ -19,6 +19,11 @@ const PUBLIC = path.join(ROOT, "public");
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || "0.0.0.0";
 const SECURE_COOKIE = process.env.COOKIE_SECURE === "true";
+// Online hosting: how many proxies (load balancers) sit in front of the server, so the visitor's own address
+// can be read for sign-in limits. 0 (the default) means people connect directly, as on an office network.
+const TRUST_PROXY = Number(process.env.TRUST_PROXY || 0);
+// Online hosting: the first admin account can only be created by someone who knows this code.
+const SETUP_CODE = String(process.env.SETUP_CODE || "");
 const SESSION_DAYS = 14;
 const MAX_UPLOAD = 20 * 1024 * 1024;
 
@@ -31,6 +36,14 @@ class HttpError extends Error {
   }
 }
 const sha256 = (s) => createHash("sha256").update(s).digest("hex");
+function clientIp(req) {
+  if (TRUST_PROXY > 0) {
+    const hops = String(req.headers["x-forwarded-for"] || "").split(",").map((s) => s.trim()).filter(Boolean);
+    if (hops.length >= TRUST_PROXY) return hops[hops.length - TRUST_PROXY]; // added by our own proxy, so it can't be faked
+  }
+  return req.socket.remoteAddress;
+}
+const sameSecret = (a, b) => timingSafeEqual(Buffer.from(sha256(String(a))), Buffer.from(sha256(String(b))));
 
 function send(res, status, body, headers = {}) {
   const data = body === undefined ? "" : JSON.stringify(body);
@@ -104,7 +117,8 @@ const LINK_DAYS = { invite: 7, reset: 2 };
 const lanAddresses = () => Object.values(os.networkInterfaces()).flat().filter((a) => a && a.family === "IPv4" && !a.internal).map((a) => `http://${a.address}:${PORT}`);
 /** The address teammates should open: PUBLIC_URL if set, else the network address when the admin is on this computer. */
 function publicBase(req) {
-  if (process.env.PUBLIC_URL) return process.env.PUBLIC_URL.replace(/\/+$/, "");
+  const configured = process.env.PUBLIC_URL || process.env.RENDER_EXTERNAL_URL; // Render sets the second one itself
+  if (configured) return configured.replace(/\/+$/, "");
   const host = String(req.headers.host || `localhost:${PORT}`);
   if (/^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i.test(host)) return lanAddresses()[0] || `http://${host}`;
   const https = SECURE_COOKIE || req.headers["x-forwarded-proto"] === "https";
@@ -783,11 +797,19 @@ async function api(req, res, url) {
   if (parts[0] === "auth") {
     const userCount = get("SELECT COUNT(*) AS n FROM users").n;
     if (parts[1] === "status" && method === "GET") {
-      return send(res, 200, { setupRequired: userCount === 0, user: currentUser(req), company: getSetting("company_name", "Integral Academy") });
+      return send(res, 200, { setupRequired: userCount === 0, setupCode: userCount === 0 && Boolean(SETUP_CODE), user: currentUser(req), company: getSetting("company_name", "Integral Academy") });
     }
     if (parts[1] === "setup" && method === "POST") {
       if (userCount > 0) throw new HttpError(409, "The workspace is already set up.");
       const body = await readJson(req);
+      if (SETUP_CODE) {
+        const keys = [`ip:${clientIp(req)}`];
+        if (throttled(keys)) throw new HttpError(429, "Too many attempts. Wait 15 minutes and try again.");
+        if (!sameSecret(String(body.setup_code || "").trim(), SETUP_CODE)) {
+          recordFailure(keys);
+          throw new HttpError(422, "That setup code isn't right. Copy it from your hosting dashboard (SETUP_CODE).", { setup_code: "Wrong code." });
+        }
+      }
       const data = validate({ name: { type: "text", required: true, max: 120 }, email: { type: "email", required: true }, company: { type: "text", max: 120 } }, body);
       const problem = passwordProblem(body.password);
       if (problem) throw new HttpError(422, problem, { password: problem });
@@ -801,7 +823,7 @@ async function api(req, res, url) {
     if (parts[1] === "login" && method === "POST") {
       const body = await readJson(req);
       const email = String(body.email || "").trim().toLowerCase();
-      const keys = [`ip:${req.socket.remoteAddress}`, `email:${email}`];
+      const keys = [`ip:${clientIp(req)}`, `email:${email}`];
       if (throttled(keys)) throw new HttpError(429, "Too many sign-in attempts. Wait 15 minutes and try again.");
       const user = get("SELECT * FROM users WHERE email = ?", email);
       // Always run one hash so a wrong email takes as long as a wrong password.
@@ -816,7 +838,7 @@ async function api(req, res, url) {
     }
     // Opening an invite or reset link: show who it's for, then let them choose their password.
     if (parts[1] === "link" && parts[2]) {
-      const keys = [`ip:${req.socket.remoteAddress}`];
+      const keys = [`ip:${clientIp(req)}`];
       if (throttled(keys)) throw new HttpError(429, "Too many attempts. Wait 15 minutes and try again.");
       const found = findAccountLink(parts[2]);
       if (!found || !found.active) {
