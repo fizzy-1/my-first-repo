@@ -2025,6 +2025,8 @@ ${inv.notes ? `<p>${lines(inv.notes)}</p>` : ""}${details.invoice_bank ? `<div><
     const settings = useResource(admin ? "/api/settings" : null);
     const [editing, setEditing] = useState(null);
     const [invite, setInvite] = useState(null); // { link, expires_at, purpose, name, email } just made
+    const [bulk, setBulk] = useState(false); // the paste-a-list dialog
+    const [bulkResult, setBulkResult] = useState(null); // { added: [invite…], skipped }
     const item = editing && editing !== "new" ? editing : null;
     const hosted = Boolean(window.WS_HOSTED);
     const domain = settings.data && settings.data.email_domain;
@@ -2055,7 +2057,7 @@ ${inv.notes ? `<p>${lines(inv.notes)}</p>` : ""}${details.invoice_bank ? `<div><
       return u.link ? html`<${Badge} tone="warning" dot>Invited<//>` : html`<${Badge} tone="danger" dot>Invite expired<//>`;
     };
     return html`<${Fragment}>
-      <${PageHeader} title="Team" description="Who's on the team and what they can do." actions=${admin && !hosted && html`<${Button} variant="primary" icon="user-plus" onClick=${() => setEditing("new")}>Add person<//>`} />
+      <${PageHeader} title="Team" description="Who's on the team and what they can do." actions=${admin && !hosted && html`<${Button} icon="users" onClick=${() => setBulk(true)}>Add several people<//><${Button} variant="primary" icon="user-plus" onClick=${() => setEditing("new")}>Add person<//>`} />
       <div style=${{ display: "grid", gap: 16 }}>
         ${hosted && html`<${Card} style=${{ padding: "14px 18px", fontSize: 13.5, display: "grid", gap: 6 }}>
           <strong>Adding people and roles</strong>
@@ -2093,11 +2095,12 @@ ${inv.notes ? `<p>${lines(inv.notes)}</p>` : ""}${details.invoice_bank ? `<div><
           reloadUsers();
         }} />
       ${invite && html`<${InviteLinkModal} invite=${invite} company=${settings.data ? settings.data.company_name : "the workspace"} onClose=${() => setInvite(null)} />`}
+      ${bulk && html`<${BulkAddModal} domain=${domain} users=${users} onClose=${() => setBulk(false)} onAdded=${(r) => { setBulk(false); setBulkResult(r); reloadUsers(); }} />`}
+      ${bulkResult && html`<${BulkLinksModal} result=${bulkResult} company=${settings.data ? settings.data.company_name : "the workspace"} onClose=${() => setBulkResult(null)} />`}
     <//>`;
   }
-  /** Shows a new invite or reset link once, with ways to send it. Links are stored hashed, so this is the only time it's visible. */
-  function InviteLinkModal({ invite, company, onClose }) {
-    const { toast } = useApp();
+  /** The email that goes with an invite or reset link, as a mailto: address. */
+  function inviteMailto(invite, company) {
     const reset = invite.purpose === "reset";
     const first = invite.name.split(" ")[0];
     const days = Math.round((new Date(invite.expires_at) - Date.now()) / 86400000);
@@ -2105,23 +2108,92 @@ ${inv.notes ? `<p>${lines(inv.notes)}</p>` : ""}${details.invoice_bank ? `<div><
     const message = reset
       ? `Hi ${first},\n\nHere's your link to choose a new password for the ${company} workspace:\n${invite.link}\n\nIt works once, for the next ${days} days.`
       : `Hi ${first},\n\nYou've been added to the ${company} team workspace. Open this link to create your password:\n${invite.link}\n\nAfter that, sign in with ${invite.email} and your password. The link works once, for the next ${days} days.`;
+    return `mailto:${invite.email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(message)}`;
+  }
+  async function copyText(text, fallbackInputId) {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      const box = document.getElementById(fallbackInputId);
+      box.select();
+      document.execCommand("copy");
+    }
+  }
+  const linkButtonStyle = { display: "inline-flex", alignItems: "center", gap: 8, height: 36, padding: "0 14px", borderRadius: 8, border: "1px solid var(--border)", color: "var(--fg)", textDecoration: "none", fontSize: 13.5, fontWeight: 500 };
+  /** Shows a new invite or reset link once, with ways to send it. Links are stored hashed, so this is the only time it's visible. */
+  function InviteLinkModal({ invite, company, onClose }) {
+    const { toast } = useApp();
+    const reset = invite.purpose === "reset";
+    const first = invite.name.split(" ")[0];
+    const days = Math.round((new Date(invite.expires_at) - Date.now()) / 86400000);
     const copy = async () => {
-      try {
-        await navigator.clipboard.writeText(invite.link);
-      } catch {
-        const box = document.getElementById("invite-link");
-        box.select();
-        document.execCommand("copy");
-      }
+      await copyText(invite.link, "invite-link");
       toast("Link copied");
     };
     return html`<${Modal} open=${true} onClose=${onClose} title=${reset ? `Password reset link for ${invite.name}` : `Invite ${invite.name}`} width=${560}
       footer=${html`${window.WS_PREVIEW && html`<${Button} variant="ghost" onClick=${() => { onClose(); window.location.hash = invite.link.slice(invite.link.indexOf("#")); }}>Try it: open the link here<//>`}<span style=${{ flex: 1 }} />
-        <a href=${`mailto:${invite.email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(message)}`} style=${{ display: "inline-flex", alignItems: "center", gap: 8, height: 36, padding: "0 14px", borderRadius: 8, border: "1px solid var(--border)", color: "var(--fg)", textDecoration: "none", fontSize: 13.5, fontWeight: 500 }}><${Icon} name="mail" />Email it<//>
+        <a href=${inviteMailto(invite, company)} style=${linkButtonStyle}><${Icon} name="mail" />Email it<//>
         <${Button} variant="primary" icon="copy" onClick=${copy}>Copy link<//>`}>
       <p style=${{ margin: 0, fontSize: 13.5 }}>${reset ? `Send this link to ${first}. It lets them choose a new password; their old one keeps working until they do.` : `Send this link to ${first} (email, WhatsApp or Teams). They open it, create their own password, and from then on sign in with ${invite.email}.`}</p>
       <${TextInput} id="invite-link" value=${invite.link} onChange=${() => {}} readOnly=${true} onFocus=${(e) => e.target.select()} aria-label="Invite link" />
       <${Muted}>The link works once and expires in ${days} days. Only the newest link for a person works. If it's lost, make a new one from their row on this page.<//>
+    <//>`;
+  }
+  /** Paste a list (one person per line) to add several people at once; each gets their own invite link. */
+  function BulkAddModal({ domain, users, onClose, onAdded }) {
+    const [text, setText] = useState("");
+    const [error, setError] = useState("");
+    const [busy, setBusy] = useState(false);
+    const existing = new Set(users.map((u) => u.email.toLowerCase()));
+    const people = window.WSMetrics.parseTeamList(text).map((p) => ({
+      ...p,
+      error: p.error || (!window.WSMetrics.emailInDomain(p.email, domain) ? `Not an @${domain} address.` : null),
+      already: existing.has(p.email),
+    }));
+    const ready = people.filter((p) => !p.error && !p.already);
+    const submit = async () => {
+      setBusy(true);
+      setError("");
+      try {
+        onAdded(await api("POST", "/api/users/bulk", { people: people.filter((p) => !p.error).map(({ line, name, email, role, job_title }) => ({ line, name, email, role, job_title })) }));
+      } catch (err) {
+        setError(err.message);
+      } finally {
+        setBusy(false);
+      }
+    };
+    return html`<${Modal} open=${true} onClose=${onClose} title="Add several people" width=${720}
+      description="One person per line: name, work email, role, job title. Role is admin, manager or member (member if left out). You can paste from a spreadsheet too."
+      footer=${html`<span style=${{ flex: 1 }} /><${Button} onClick=${onClose}>Cancel<//>
+        <${Button} variant="primary" disabled=${busy || !ready.length || people.some((p) => p.error)} onClick=${submit}>${busy ? "Adding…" : ready.length ? `Add ${ready.length} ${ready.length === 1 ? "person" : "people"} and get invite links` : "Add people"}<//>`}>
+      <${Field} id="bulk-list" label="Team list"><${TextArea} id="bulk-list" rows=${7} value=${text} onChange=${setText} placeholder=${`Thabo Nkosi, thabo@${domain || "yourcompany.co.za"}, member, Maths Teacher\nZanele Dube, zanele@${domain || "yourcompany.co.za"}, manager, Operations`} /><//>
+      ${people.length > 0 && html`<div style=${{ overflowX: "auto" }}><table class="table" style=${{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+        <thead><tr>${["Name", "Email", "Role", "Job title", ""].map((h) => html`<th style=${{ textAlign: "left", padding: "6px 8px", color: "var(--muted-fg)", fontWeight: 500, borderBottom: "1px solid var(--border)" }}>${h}</th>`)}</tr></thead>
+        <tbody>${people.map((p) => html`<tr key=${p.line}>
+          <td style=${{ padding: "6px 8px" }}>${p.name || "—"}</td>
+          <td style=${{ padding: "6px 8px", wordBreak: "break-all" }}>${p.email || "—"}</td>
+          <td style=${{ padding: "6px 8px" }}><${StatusBadge} meta=${META.role} value=${p.role} /></td>
+          <td style=${{ padding: "6px 8px" }}>${p.job_title || ""}</td>
+          <td style=${{ padding: "6px 8px", whiteSpace: "nowrap" }}>${p.error ? html`<span style=${{ color: "var(--danger)" }}>Line ${p.line}: ${p.error}</span>` : p.already ? html`<${Muted}>Already on the team<//>` : html`<${Badge} tone="success">Ready<//>`}</td>
+        </tr>`)}</tbody></table></div>`}
+      <${Alert}>${error}<//>
+    <//>`;
+  }
+  /** After adding several people: each person's invite link, to email or copy one by one. */
+  function BulkLinksModal({ result, company, onClose }) {
+    const { toast } = useApp();
+    return html`<${Modal} open=${true} onClose=${onClose} title=${`${result.added.length} invite link${result.added.length === 1 ? "" : "s"} ready`} width=${720}
+      footer=${html`<span style=${{ flex: 1 }} /><${Button} variant="primary" onClick=${onClose}>Done<//>`}>
+      <p style=${{ margin: 0, fontSize: 13.5 }}>Send each person their own link: it only works for them, once, within 7 days. They create their password and from then on sign in with their work email. These links aren't shown again; if one is lost, make a new one from that person's row.</p>
+      <div style=${{ display: "grid", gap: 10 }}>${result.added.map((a, i) => html`<div key=${a.id} style=${{ display: "grid", gap: 6, padding: 12, border: "1px solid var(--border)", borderRadius: 10 }}>
+        <div style=${{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <${UserChip} name=${a.name} subtitle=${a.email} /><${StatusBadge} meta=${META.role} value=${a.role} /><span style=${{ flex: 1 }} />
+          <a href=${inviteMailto({ ...a, purpose: "invite" }, company)} style=${linkButtonStyle}><${Icon} name="mail" />Email it<//>
+          <${Button} icon="copy" onClick=${async () => { await copyText(a.link, `bulk-link-${i}`); toast(`Link for ${a.name.split(" ")[0]} copied`); }}>Copy link<//>
+        </div>
+        <${TextInput} id=${`bulk-link-${i}`} value=${a.link} onChange=${() => {}} readOnly=${true} onFocus=${(e) => e.target.select()} aria-label=${`Invite link for ${a.name}`} />
+      </div>`)}</div>
+      ${result.skipped.length > 0 && html`<${Muted}>Already on the team, so skipped: ${result.skipped.map((s) => s.name).join(", ")}.<//>`}
     <//>`;
   }
   function SettingsCard({ initial, onSaved }) {

@@ -250,9 +250,26 @@
     return d && !PUBLIC_MAIL.has(d) ? d : "";
   }
   const emailInDomain = (email, domain) => !domain || String(email || "").trim().toLowerCase().endsWith(`@${domain}`);
+  const ROLES = ["admin", "manager", "member"];
+  /**
+   * Reads a pasted team list, one person per line: "Name, email, role, job title" (commas or tabs; role and
+   * job title optional, role defaults to member). Returns [{ line, name, email, role, job_title, error }].
+   */
+  function parseTeamList(text) {
+    return String(text || "").split(/\r?\n/).map((raw, i) => ({ raw: raw.trim(), line: i + 1 })).filter((r) => r.raw).map(({ raw, line }) => {
+      const cells = raw.split(raw.includes("\t") ? "\t" : ",").map((c) => c.trim());
+      const [name = "", email = "", ...rest] = cells;
+      let role = "member";
+      if (rest.length && ROLES.includes(rest[0].toLowerCase())) role = rest.shift().toLowerCase();
+      const person = { line, name, email: email.toLowerCase(), role, job_title: rest.join(", ").trim() || null, error: null };
+      if (!name) person.error = "Missing a name.";
+      else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(person.email)) person.error = "The second item should be their email.";
+      return person;
+    });
+  }
 
   const api = {
-    normalizeDomain, companyDomainOf, emailInDomain,
+    normalizeDomain, companyDomainOf, emailInDomain, parseTeamList,
     isoDay, addDays, addMonths, lastDay, monthsBack, daysBetween,
     contractState, arrOn, schoolsOn, learnersOn, renewalSummary, invoiceState, invoiceSummary, nextInvoiceNumber,
     GOAL_METRICS, goalProgress, budgetVsActual, forecast, statsMatrix, teamMatrix,

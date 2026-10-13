@@ -109,6 +109,8 @@ Everyone signs in with their **work email** (for example `thabo@integralacademy.
 3. The person opens the link, sees their email, creates a password (at least 10 characters, with letters and a number) and is signed in. You get a notification when they've joined.
 4. From then on they sign in with their work email and that password.
 
+**Adding the whole team at once:** click **Add several people** and paste one person per line: `name, work email, role, job title`. Role is `admin`, `manager` or `member` (member if left out), and you can paste straight from a spreadsheet. The workspace checks every line first and skips anyone already on the team, then shows each person's own invite link with **Email it** and **Copy link**.
+
 Invite links work once and expire after 7 days. Until someone joins, the Team list shows them as **Invited**. To send a fresh link, click their row and choose **New invite link**; any earlier link stops working.
 
 **Only company emails.** Under **Workspace settings**, **Company email domain** (for example `integralacademy.co.za`) limits the team to addresses at that domain. It's filled in automatically from the first admin's email, unless that's a personal address such as Gmail. Leave it empty to allow any email.

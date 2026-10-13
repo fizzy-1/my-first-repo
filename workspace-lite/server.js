@@ -962,6 +962,44 @@ async function api(req, res, url) {
     }
     if (!atLeast(user, "admin")) throw new HttpError(403, "Only an admin can manage the team.");
     const spec = { name: { type: "text", required: true, max: 120 }, email: { type: "email", required: true }, role: { type: "enum", values: ["admin", "manager", "member"], required: true }, job_title: { type: "text", max: 120 }, active: { type: "bool" } };
+    // Several people at once (pasted list): all checked first, people already on the team skipped.
+    if (method === "POST" && parts[1] === "bulk") {
+      const people = (await readJson(req)).people;
+      if (!Array.isArray(people) || !people.length || people.length > 50) throw new HttpError(422, "Add between 1 and 50 people at a time.");
+      const seen = new Set();
+      const checked = people.map((p, i) => {
+        const where = `Line ${p && p.line ? p.line : i + 1}`;
+        let data;
+        try {
+          data = validate(spec, { name: p && p.name, email: p && p.email, role: (p && p.role) || "member", job_title: (p && p.job_title) || null });
+          checkCompanyEmail(data.email);
+        } catch (err) {
+          throw new HttpError(422, `${where}: ${err.fields ? Object.values(err.fields)[0] : err.message}`);
+        }
+        if (seen.has(data.email)) throw new HttpError(422, `${where}: ${data.email} is on the list twice.`);
+        seen.add(data.email);
+        return data;
+      });
+      const added = [];
+      const skipped = [];
+      db.exec("BEGIN");
+      try {
+        for (const data of checked) {
+          if (get("SELECT id FROM users WHERE email = ?", data.email)) {
+            skipped.push({ name: data.name, email: data.email });
+            continue;
+          }
+          const created = insert("users", { ...data, active: 1, password_hash: "" });
+          added.push({ id: created.id, name: created.name, email: created.email, role: created.role, ...createAccountLink(req, created.id, "invite", user.id) });
+        }
+        if (added.length) logActivity(user.id, `${user.name} added ${added.length === 1 ? added[0].name : `${added.length} people`} to the team`);
+        db.exec("COMMIT");
+      } catch (err) {
+        db.exec("ROLLBACK");
+        throw err;
+      }
+      return send(res, 201, { added, skipped });
+    }
     if (method === "POST" && !parts[1]) {
       const data = validate(spec, await readJson(req));
       checkCompanyEmail(data.email);
