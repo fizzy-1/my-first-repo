@@ -1,17 +1,36 @@
-// Database: a single SQLite file using Node's built-in driver (no native modules to install).
+// Database. On a computer: a single SQLite file using Node's built-in driver (no native modules to install).
+// Online (e.g. Vercel, which keeps no files): a Turso database, which speaks the same SQL, when
+// TURSO_DATABASE_URL is set. Uploaded files then live in the database too.
 import { DatabaseSync } from "node:sqlite";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-// Everything the workspace stores lives in this folder: back it up by copying it.
+// Everything the workspace stores on a computer lives in this folder: back it up by copying it.
 export const DATA_DIR = path.resolve(process.env.DATA_DIR || path.join(path.dirname(fileURLToPath(import.meta.url)), "data"));
-mkdirSync(path.join(DATA_DIR, "uploads"), { recursive: true });
+export const ONLINE = Boolean(process.env.TURSO_DATABASE_URL);
 
-export const db = new DatabaseSync(path.join(DATA_DIR, "workspace.db"));
-db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
+let driver;
+if (ONLINE) {
+  const { connect } = await import("./db-remote.js");
+  driver = connect(process.env.TURSO_DATABASE_URL, process.env.TURSO_AUTH_TOKEN);
+} else {
+  mkdirSync(path.join(DATA_DIR, "uploads"), { recursive: true });
+  const sqlite = new DatabaseSync(path.join(DATA_DIR, "workspace.db"));
+  sqlite.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
+  driver = {
+    all: (sql, params) => sqlite.prepare(sql).all(...params),
+    get: (sql, params) => sqlite.prepare(sql).get(...params),
+    run: (sql, params) => sqlite.prepare(sql).run(...params),
+    exec: (sql) => sqlite.exec(sql),
+    begin: () => sqlite.exec("BEGIN"),
+    commit: () => sqlite.exec("COMMIT"),
+    rollback: () => sqlite.exec("ROLLBACK"),
+    snapshot: (file) => sqlite.prepare("VACUUM INTO ?").run(file),
+  };
+}
 
-db.exec(`
+driver.exec(`
 CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY,
   name TEXT NOT NULL,
@@ -213,15 +232,61 @@ CREATE INDEX IF NOT EXISTS tasks_assignee ON tasks(assignee_id, status);
 CREATE INDEX IF NOT EXISTS leads_stage ON leads(stage);
 CREATE INDEX IF NOT EXISTS tx_date ON transactions(date);
 CREATE INDEX IF NOT EXISTS activity_created ON activity(created_at);
+-- Failed sign-ins, for slowing down password guessing (kept in the database so it works across online servers).
+CREATE TABLE IF NOT EXISTS auth_failures (key TEXT NOT NULL, at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS auth_failures_key ON auth_failures(key, at);
+-- Uploaded files when running online (on a computer they're files in data/uploads).
+CREATE TABLE IF NOT EXISTS files (storage_key TEXT PRIMARY KEY, data BLOB NOT NULL);
 `);
 
-export const all = (sql, ...params) => db.prepare(sql).all(...params);
-export const get = (sql, ...params) => db.prepare(sql).get(...params);
-export const run = (sql, ...params) => db.prepare(sql).run(...params);
+export const all = (sql, ...params) => driver.all(sql, params);
+export const get = (sql, ...params) => driver.get(sql, params);
+export const run = (sql, ...params) => driver.run(sql, params);
+/** Runs fn inside a transaction: everything it writes is saved together, or not at all. */
+export function transaction(fn) {
+  driver.begin();
+  try {
+    const out = fn();
+    driver.commit();
+    return out;
+  } catch (err) {
+    driver.rollback();
+    throw err;
+  }
+}
+/** Writes a consistent copy of the whole database to a SQLite file (for backups). */
+export const snapshotTo = (file) => driver.snapshot(file);
+
+// Uploaded files: in data/uploads on a computer, in the database online.
+export function saveFile(key, data) {
+  if (ONLINE) run("INSERT INTO files (storage_key, data) VALUES (?, ?)", key, data);
+  else writeFileSync(path.join(DATA_DIR, "uploads", key), data, { flag: "wx", mode: 0o600 });
+}
+export function readStoredFile(key) {
+  if (ONLINE) {
+    const row = get("SELECT data FROM files WHERE storage_key = ?", key);
+    return row ? Buffer.from(row.data) : null;
+  }
+  try {
+    return readFileSync(path.join(DATA_DIR, "uploads", key));
+  } catch {
+    return null;
+  }
+}
+export function removeFile(key) {
+  if (ONLINE) run("DELETE FROM files WHERE storage_key = ?", key);
+  else {
+    try {
+      unlinkSync(path.join(DATA_DIR, "uploads", key));
+    } catch {
+      /* already gone */
+    }
+  }
+}
 
 // Upgrades for workspaces created by an earlier version: add columns that are missing.
 function ensureColumn(table, column, definition) {
-  if (!all(`PRAGMA table_info(${table})`).some((c) => c.name === column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  if (!all(`PRAGMA table_info(${table})`).some((c) => c.name === column)) driver.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
 }
 ensureColumn("users", "must_change_password", "INTEGER NOT NULL DEFAULT 0");
 ensureColumn("activity", "audience", "TEXT NOT NULL DEFAULT 'all'");

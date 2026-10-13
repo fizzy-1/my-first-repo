@@ -100,11 +100,16 @@ All settings are optional environment variables:
 | `COOKIE_SECURE` | `false` | Set to `true` when serving over HTTPS |
 | `SETUP_CODE` | *(none)* | Online hosting: the code needed to create the first admin account |
 | `TRUST_PROXY` | `0` | Online hosting: number of proxies in front of the server (`1` on Render), so sign-in limits see each visitor's own address |
+| `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN` | *(none)* | Online hosting without a disk (Vercel): use this Turso database instead of the data folder |
 | `PUBLIC_URL` | *(network address)* | The address teammates use, for invite and reset links, e.g. `https://workspace.integralacademy.co.za` |
 
 ## Put it online so everyone can work from home
 
-On the office computer, only people on the office network can reach the workspace. To let the team sign in from anywhere, run it on a web host instead. The repository includes everything needed for **Render** (render.com): a `Dockerfile` and a `render.yaml` blueprint in this folder.
+On the office computer, only people on the office network can reach the workspace. To let the team sign in from anywhere, run it on a web host instead: **Vercel** (with a Turso database) or **Render** (with a disk). This folder has what both need.
+
+### On Render
+
+`Dockerfile` and `render.yaml` in this folder set it up.
 
 1. Create a Render account and connect it to GitHub.
 2. In Render, choose **New → Blueprint**, pick this repository, and set **Blueprint Path** to `workspace-lite/render.yaml`. (The `render.yaml` at the top of the repository is for the full Executive Workspace.) If the workspace isn't on the repository's main branch yet, merge it first or choose its branch. Render creates the web service with a 1 GB disk for the database and files.
@@ -113,6 +118,28 @@ On the office computer, only people on the office network can reach the workspac
 5. Add the team under **Team & settings → Add several people**. Invite links automatically use the online address, so they work from home.
 
 It needs Render's paid Starter plan, because the free plan has no lasting disk and would lose your data. That's roughly US$7–8 a month at the time of writing; check render.com/pricing. Keep downloading backups from **Team & settings** as usual. To use your own address such as `workspace.integralacademy.co.za`, add it under the service's **Custom domains** and set `PUBLIC_URL` to it.
+
+### On Vercel
+
+Vercel runs the workspace as a function and keeps no files, so the data goes in an online database instead: **Turso**, which speaks the same SQL as the workspace's own database. Uploaded files are stored in that database too. Everything else works the same.
+
+1. **Create the database.** Sign up at turso.tech and create a database in **Frankfurt** (or the Europe region closest to it). Copy its **URL** (`libsql://…`) and create a **token**. (Or add Turso from Vercel's Marketplace, which fills in the next step for you.)
+2. **Import the project into Vercel.** Choose **Add New → Project**, pick this repository, and set **Root Directory** to `workspace-lite`. Leave the framework as **Other**; `vercel.json` has the rest. If the workspace isn't on the main branch yet, merge it first.
+3. **Add environment variables** (Settings → Environment Variables):
+   - `TURSO_DATABASE_URL`: the database URL.
+   - `TURSO_AUTH_TOKEN`: the token.
+   - `SETUP_CODE`: a long random phrase only you know. It's needed once, to create the admin account.
+4. **Deploy.** Open the address Vercel gives you (e.g. `https://integral-workspace-lite.vercel.app`), enter the setup code, and create the first admin account. Then add the team under **Team & settings → Add several people**. Invite links use the Vercel address automatically.
+
+Things to know on Vercel:
+
+- **Plan:** Vercel's free Hobby plan is for personal, non-commercial use only, so a company workspace needs **Vercel Pro**. Turso has a free tier that covers a small team.
+- **Speed:** the function runs in Frankfurt (`regions` in `vercel.json`). Keep the database in the same region, or every page waits for the database across continents. If you choose another database region, change `regions` to the nearest Vercel region.
+- **Uploads:** files can be up to 4 MB each, because Vercel accepts at most 4.5 MB per request. Import bank statements a month or two at a time.
+- **Reminders:** renewal and overdue-invoice reminders run on the first visit each hour, instead of on a timer.
+- **Backups:** **Download backup** gives the same `.zip` as on a computer: the database plus uploaded files. Unzip it into a workspace folder on any computer and it opens there.
+
+### Other hosts
 
 The same `Dockerfile` runs on Railway, Fly.io or any server with Docker. Give it a persistent disk at `/data` and set `COOKIE_SECURE=true`, `TRUST_PROXY=1` and a long random `SETUP_CODE`.
 
@@ -179,7 +206,9 @@ To publish it, run `node preview/build.mjs`. Then publish `hosted.html` with `ho
 ## How it's built
 
 - `server.js`: the HTTP server and the whole API, including validation and permission rules.
-- `db.js`: the database schema (Node's built-in SQLite).
+- `db.js`: the database schema (Node's built-in SQLite), and where uploaded files are kept.
+- `db-remote.js` / `db-worker.js`: the online database (Turso), used only when `TURSO_DATABASE_URL` is set. Its client, `@libsql/client`, is the workspace's only dependency, and it's needed only online.
+- `api/index.js` / `vercel.json`: running on Vercel. `Dockerfile` / `render.yaml`: running on Render or another Docker host.
 - `passwords.js`: password hashing.
 - `seed.js`: optional demo data.
 - `Start Workspace.bat` / `Start Workspace.command`: double-click launchers that check Node.js, start the server and open the browser.

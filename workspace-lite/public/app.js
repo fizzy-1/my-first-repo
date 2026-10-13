@@ -1949,7 +1949,7 @@ ${inv.notes ? `<p>${lines(inv.notes)}</p>` : ""}${details.invoice_bank ? `<div><
   // ─────────────────────────── Documents ───────────────────────────
   const ACCEPT = ".pdf,.png,.jpg,.jpeg,.txt,.csv,.docx,.xlsx,.pptx";
   function UploadModal({ open, onClose, onDone, folders }) {
-    const { user } = useApp();
+    const { user, maxUploadMb } = useApp();
     const canPrivate = atLeast(user, "manager");
     const [file, setFile] = useState(null);
     const [title, setTitle] = useState("");
@@ -1968,7 +1968,7 @@ ${inv.notes ? `<p>${lines(inv.notes)}</p>` : ""}${details.invoice_bank ? `<div><
     }, [open]);
     const upload = async () => {
       if (!file) return setError("Choose a file to upload.");
-      if (file.size > 20 * 1024 * 1024) return setError("Files can be up to 20 MB.");
+      if (file.size > maxUploadMb * 1024 * 1024) return setError(`Files can be up to ${maxUploadMb} MB.`);
       setBusy(true);
       setError("");
       try {
@@ -2879,6 +2879,7 @@ ${inv.notes ? `<p>${lines(inv.notes)}</p>` : ""}${details.invoice_bank ? `<div><
       return {
         user: status.user,
         company: status.company,
+        maxUploadMb: status.maxUploadMb || 20,
         users,
         reloadUsers,
         userName: (id) => (id ? (byId.get(id) || {}).name || "—" : "—"),

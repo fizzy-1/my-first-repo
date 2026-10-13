@@ -3,3 +3,6 @@ node_modules
 *.zip
 .git
 preview
+.vercel
+api
+vercel.json

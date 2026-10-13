@@ -4,11 +4,12 @@ import http from "node:http";
 import os from "node:os";
 import { spawn } from "node:child_process";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { createReadStream, existsSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
 import { crc32, deflateRawSync } from "node:zlib";
 import { fileURLToPath } from "node:url";
-import { DATA_DIR, all, db, get, getSetting, logActivity, run, setSetting } from "./db.js";
+import { DATA_DIR, ONLINE, all, get, getSetting, logActivity, readStoredFile, removeFile, run, saveFile, setSetting, snapshotTo, transaction } from "./db.js";
 import { hashPassword, passwordProblem, verifyPassword } from "./passwords.js";
 import "./public/metrics.js"; // shared calculations (also used by the online preview)
 
@@ -18,14 +19,16 @@ const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(ROOT, "public");
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || "0.0.0.0";
-const SECURE_COOKIE = process.env.COOKIE_SECURE === "true";
+const ON_VERCEL = Boolean(process.env.VERCEL); // Vercel sets this; it always serves over HTTPS through one proxy
+const SECURE_COOKIE = process.env.COOKIE_SECURE === "true" || (ON_VERCEL && process.env.COOKIE_SECURE !== "false");
 // Online hosting: how many proxies (load balancers) sit in front of the server, so the visitor's own address
 // can be read for sign-in limits. 0 (the default) means people connect directly, as on an office network.
-const TRUST_PROXY = Number(process.env.TRUST_PROXY || 0);
+const TRUST_PROXY = Number(process.env.TRUST_PROXY || (ON_VERCEL ? 1 : 0));
 // Online hosting: the first admin account can only be created by someone who knows this code.
 const SETUP_CODE = String(process.env.SETUP_CODE || "");
 const SESSION_DAYS = 14;
-const MAX_UPLOAD = 20 * 1024 * 1024;
+// Vercel accepts at most 4.5 MB per request, so uploads there are capped at 4 MB.
+const MAX_UPLOAD = (ON_VERCEL ? 4 : 20) * 1024 * 1024;
 
 // ─────────────────────────── Helpers ───────────────────────────
 class HttpError extends Error {
@@ -55,7 +58,7 @@ async function readBody(req, limit = 1024 * 1024) {
   let size = 0;
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > limit) throw new HttpError(413, "That's too large.");
+    if (size > limit) throw new HttpError(413, limit === MAX_UPLOAD ? `Files can be up to ${MAX_UPLOAD / 1048576} MB.` : "That's too large.");
     chunks.push(chunk);
   }
   return Buffer.concat(chunks);
@@ -117,7 +120,8 @@ const LINK_DAYS = { invite: 7, reset: 2 };
 const lanAddresses = () => Object.values(os.networkInterfaces()).flat().filter((a) => a && a.family === "IPv4" && !a.internal).map((a) => `http://${a.address}:${PORT}`);
 /** The address teammates should open: PUBLIC_URL if set, else the network address when the admin is on this computer. */
 function publicBase(req) {
-  const configured = process.env.PUBLIC_URL || process.env.RENDER_EXTERNAL_URL; // Render sets the second one itself
+  // Render and Vercel announce their address themselves.
+  const configured = process.env.PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || (process.env.VERCEL_PROJECT_PRODUCTION_URL && `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`);
   if (configured) return configured.replace(/\/+$/, "");
   const host = String(req.headers.host || `localhost:${PORT}`);
   if (/^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i.test(host)) return lanAddresses()[0] || `http://${host}`;
@@ -142,13 +146,12 @@ function checkCompanyEmail(email) {
 }
 
 // Sign-in throttle: 5 failures per email or 20 per IP in 15 minutes.
-const failures = new Map();
 function throttled(keys) {
-  const now = Date.now();
-  return keys.some((k) => (failures.get(k) || []).filter((t) => now - t < 15 * 60000).length >= (k.startsWith("ip:") ? 20 : 5));
+  const since = Date.now() - 15 * 60000;
+  return keys.some((k) => get("SELECT COUNT(*) AS n FROM auth_failures WHERE key = ? AND at > ?", k, since).n >= (k.startsWith("ip:") ? 20 : 5));
 }
 function recordFailure(keys) {
-  for (const k of keys) failures.set(k, [...(failures.get(k) || []).filter((t) => Date.now() - t < 15 * 60000), Date.now()]);
+  for (const k of keys) run("INSERT INTO auth_failures (key, at) VALUES (?, ?)", k, Date.now());
 }
 
 // ─────────────────────────── Validation ───────────────────────────
@@ -675,8 +678,7 @@ function importTransactions(rows, user) {
   });
   let imported = 0;
   let duplicates = 0;
-  db.exec("BEGIN");
-  try {
+  transaction(() => {
     for (const r of ready) {
       const k = key(r);
       if (!alreadyThere.has(k)) alreadyThere.set(k, get("SELECT COUNT(*) AS n FROM transactions WHERE date = ? AND kind = ? AND amount = ? AND lower(description) = ?", r.date, r.kind, r.amount, r.description.toLowerCase()).n);
@@ -690,11 +692,7 @@ function importTransactions(rows, user) {
       insert("transactions", { kind: r.kind, date: r.date, amount: r.amount, description: r.description, category, created_by: user.id });
       imported++;
     }
-    db.exec("COMMIT");
-  } catch (error) {
-    db.exec("ROLLBACK");
-    throw error;
-  }
+  });
   if (imported) logActivity(user.id, `${user.name} imported ${imported} transactions from a bank statement`, "manager");
   return { imported, duplicates, invalid };
 }
@@ -765,17 +763,23 @@ const MAX_BACKUP = 1024 * 1024 * 1024;
 function buildBackup() {
   const snapshot = path.join(os.tmpdir(), `workspace-backup-${randomBytes(6).toString("hex")}.db`);
   try {
-    db.prepare("VACUUM INTO ?").run(snapshot);
-    const files = [{ name: "data/workspace.db", data: readFileSync(snapshot) }];
-    let total = files[0].data.length;
-    const uploads = path.join(DATA_DIR, "uploads");
-    for (const name of readdirSync(uploads)) {
-      const file = path.join(uploads, name);
-      if (!statSync(file).isFile()) continue;
-      total += statSync(file).size;
-      if (total > MAX_BACKUP) throw new HttpError(413, "The workspace is too big to download as one file. Copy the data folder instead (see the README).");
-      files.push({ name: `data/uploads/${name}`, data: readFileSync(file) });
+    snapshotTo(snapshot);
+    const files = [];
+    if (ONLINE) {
+      // Online, files are stored in the database: move them into data/uploads so the backup opens on a computer.
+      const copy = new DatabaseSync(snapshot, { enableForeignKeyConstraints: false });
+      for (const f of copy.prepare("SELECT storage_key, data FROM files").all()) files.push({ name: `data/uploads/${f.storage_key}`, data: Buffer.from(f.data) });
+      copy.exec("DELETE FROM files; DELETE FROM auth_failures; VACUUM;");
+      copy.close();
+    } else {
+      const uploads = path.join(DATA_DIR, "uploads");
+      for (const name of readdirSync(uploads)) {
+        const file = path.join(uploads, name);
+        if (statSync(file).isFile()) files.push({ name: `data/uploads/${name}`, data: readFileSync(file) });
+      }
     }
+    files.unshift({ name: "data/workspace.db", data: readFileSync(snapshot) });
+    if (files.reduce((n, f) => n + f.data.length, 0) > MAX_BACKUP) throw new HttpError(413, "The workspace is too big to download as one file. Copy the data folder instead (see the README).");
     return zipFiles(files);
   } finally {
     rmSync(snapshot, { force: true });
@@ -797,11 +801,12 @@ async function api(req, res, url) {
   if (parts[0] === "auth") {
     const userCount = get("SELECT COUNT(*) AS n FROM users").n;
     if (parts[1] === "status" && method === "GET") {
-      return send(res, 200, { setupRequired: userCount === 0, setupCode: userCount === 0 && Boolean(SETUP_CODE), user: currentUser(req), company: getSetting("company_name", "Integral Academy") });
+      return send(res, 200, { setupRequired: userCount === 0, setupCode: userCount === 0 && (Boolean(SETUP_CODE) || ON_VERCEL), maxUploadMb: MAX_UPLOAD / 1048576, user: currentUser(req), company: getSetting("company_name", "Integral Academy") });
     }
     if (parts[1] === "setup" && method === "POST") {
       if (userCount > 0) throw new HttpError(409, "The workspace is already set up.");
       const body = await readJson(req);
+      if (ON_VERCEL && !SETUP_CODE) throw new HttpError(403, "Add a SETUP_CODE in Vercel (Settings → Environment Variables), redeploy, then try again. It stops strangers creating the admin account.");
       if (SETUP_CODE) {
         const keys = [`ip:${clientIp(req)}`];
         if (throttled(keys)) throw new HttpError(429, "Too many attempts. Wait 15 minutes and try again.");
@@ -1004,8 +1009,7 @@ async function api(req, res, url) {
       });
       const added = [];
       const skipped = [];
-      db.exec("BEGIN");
-      try {
+      transaction(() => {
         for (const data of checked) {
           if (get("SELECT id FROM users WHERE email = ?", data.email)) {
             skipped.push({ name: data.name, email: data.email });
@@ -1015,11 +1019,7 @@ async function api(req, res, url) {
           added.push({ id: created.id, name: created.name, email: created.email, role: created.role, ...createAccountLink(req, created.id, "invite", user.id) });
         }
         if (added.length) logActivity(user.id, `${user.name} added ${added.length === 1 ? added[0].name : `${added.length} people`} to the team`);
-        db.exec("COMMIT");
-      } catch (err) {
-        db.exec("ROLLBACK");
-        throw err;
-      }
+      });
       return send(res, 201, { added, skipped });
     }
     if (method === "POST" && !parts[1]) {
@@ -1133,7 +1133,7 @@ async function api(req, res, url) {
       const data = await readBody(req, MAX_UPLOAD);
       if (!data.length) throw new HttpError(422, "The file is empty.");
       const key = `${Date.now()}-${randomBytes(8).toString("hex")}${ext}`;
-      writeFileSync(path.join(DATA_DIR, "uploads", key), data, { flag: "wx", mode: 0o600 });
+      saveFile(key, data);
       const doc = insert("documents", { title: meta.title, folder: meta.folder || "General", file_name: fileName, mime_type: DOC_TYPES[ext], size: data.length, storage_key: key, private: req.headers["x-private"] === "1" ? 1 : 0, uploaded_by: user.id });
       logActivity(user.id, `${user.name} uploaded “${doc.title}”`, doc.private ? "manager" : "all");
       return send(res, 201, { id: doc.id });
@@ -1141,26 +1141,22 @@ async function api(req, res, url) {
     const doc = get("SELECT * FROM documents WHERE id = ?", Number(parts[1]));
     if (!doc || !canSeeDoc(user, doc)) throw new HttpError(404, "Not found.");
     if (method === "GET" && parts[2] === "file") {
-      const file = path.join(DATA_DIR, "uploads", doc.storage_key);
-      if (!existsSync(file)) throw new HttpError(404, "The file is missing.");
+      const content = readStoredFile(doc.storage_key);
+      if (!content) throw new HttpError(404, "The file is missing.");
       const inline = url.searchParams.get("inline") === "1" && /^(application\/pdf|image\/)/.test(doc.mime_type);
       res.writeHead(200, {
         "Content-Type": doc.mime_type,
-        "Content-Length": statSync(file).size,
+        "Content-Length": content.length,
         "Content-Disposition": `${inline ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(doc.file_name)}`,
         "X-Content-Type-Options": "nosniff",
         "Cache-Control": "private, no-store",
       });
-      return createReadStream(file).pipe(res);
+      return res.end(content);
     }
     if (method === "DELETE") {
       if (!(doc.uploaded_by === user.id || atLeast(user, "manager"))) throw new HttpError(403, "Only the uploader or a manager can delete this.");
       run("DELETE FROM documents WHERE id = ?", doc.id);
-      try {
-        unlinkSync(path.join(DATA_DIR, "uploads", doc.storage_key));
-      } catch {
-        /* already gone */
-      }
+      removeFile(doc.storage_key);
       logActivity(user.id, `${user.name} deleted “${doc.title}”`, doc.private ? "manager" : "all");
       return send(res, 200, { ok: true });
     }
@@ -1246,15 +1242,10 @@ async function api(req, res, url) {
       const body = await readJson(req);
       if (!Array.isArray(body.items) || body.items.length > 100) throw new HttpError(422, "Send a list of budget lines.");
       const items = body.items.map((it) => validate({ category: { type: "text", required: true, max: 60 }, monthly_amount: { type: "money", required: true } }, it || {}));
-      db.exec("BEGIN");
-      try {
+      transaction(() => {
         run("DELETE FROM budgets");
         for (const it of items) if (it.monthly_amount > 0) run("INSERT INTO budgets (category, monthly_amount) VALUES (?, ?) ON CONFLICT(category) DO UPDATE SET monthly_amount = excluded.monthly_amount", it.category, it.monthly_amount);
-        db.exec("COMMIT");
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
+      });
       logActivity(user.id, `${user.name} updated the monthly budget`, "manager");
       return send(res, 200, { ok: true });
     }
@@ -1307,6 +1298,7 @@ async function api(req, res, url) {
       if (resource.canCreate && !resource.canCreate(user)) throw new HttpError(403, "You don't have access to this.");
       let data = validate(resource.fields, await readJson(req));
       if (resource.beforeCreate) data = resource.beforeCreate(data, user);
+      checkLinks(data);
       const row = insert(table, data);
       if (resource.afterCreate) resource.afterCreate(row, user);
       logActivity(user.id, `${user.name} added ${resource.label(row)}`, resource.audience);
@@ -1321,6 +1313,7 @@ async function api(req, res, url) {
       if (!resource.canEdit(user, row)) throw new HttpError(403, "You can't change this.");
       let data = validate(resource.fields, await readJson(req), { partial: true });
       if (resource.beforeUpdate) data = resource.beforeUpdate(data, row, user);
+      checkLinks(data);
       const updated = update(table, row.id, data);
       const extra = resource.afterUpdate ? resource.afterUpdate(updated, row, user) : null;
       if (extra) Object.assign(updated, extra);
@@ -1329,12 +1322,32 @@ async function api(req, res, url) {
     }
     if (method === "DELETE") {
       if (!resource.canDelete(user, row)) throw new HttpError(403, "You can't delete this.");
-      run(`DELETE FROM ${table} WHERE id = ?`, row.id);
+      transaction(() => removeWithLinks(table, row.id));
       logActivity(user.id, `${user.name} deleted ${resource.label(row)}`, resource.audience);
       return send(res, 200, { ok: true });
     }
   }
   throw new HttpError(404, "Not found.");
+}
+
+// Records that point at others, and what happens to them when the other is deleted. The database on a computer
+// enforces the same rules itself; the online database doesn't, so they're applied here as well.
+const LINKS = {
+  leads: { remove: [["lead_notes", "lead_id"], ["contracts", "lead_id"]], clear: [["tasks", "lead_id"], ["invoices", "lead_id"]] },
+  contracts: { clear: [["invoices", "contract_id"]] },
+  meetings: { clear: [["tasks", "meeting_id"]] },
+  goals: { remove: [["goal_updates", "goal_id"]] },
+};
+function removeWithLinks(table, id) {
+  const links = LINKS[table] || {};
+  for (const [child, column] of links.remove || []) for (const { id: childId } of all(`SELECT id FROM ${child} WHERE ${column} = ?`, id)) removeWithLinks(child, childId);
+  for (const [child, column] of links.clear || []) run(`UPDATE ${child} SET ${column} = NULL WHERE ${column} = ?`, id);
+  run(`DELETE FROM ${table} WHERE id = ?`, id);
+}
+const LINK_FIELDS = { lead_id: "leads", meeting_id: "meetings", contract_id: "contracts", goal_id: "goals" };
+function checkLinks(data) {
+  for (const [field, table] of Object.entries(LINK_FIELDS))
+    if (data[field] != null && !get(`SELECT id FROM ${table} WHERE id = ?`, data[field])) throw new HttpError(422, "A linked record is missing.");
 }
 
 // ─────────────────────────── Static files ───────────────────────────
@@ -1358,11 +1371,15 @@ function serveStatic(req, res, url) {
   res.end(readFileSync(file));
 }
 
-const server = http.createServer(async (req, res) => {
+/** Handles one request. Exported for hosts that run the workspace as a function (Vercel: api/index.js). */
+export async function handle(req, res) {
   const url = new URL(req.url, "http://localhost");
   try {
     if (url.pathname === "/health") return send(res, 200, { status: "ok" });
-    if (url.pathname.startsWith("/api/")) return await api(req, res, url);
+    if (url.pathname.startsWith("/api/")) {
+      housekeepingIfDue();
+      return await api(req, res, url);
+    }
     return serveStatic(req, res, url);
   } catch (error) {
     if (error instanceof HttpError) return send(res, error.status, { error: error.message, fields: error.fields });
@@ -1370,15 +1387,32 @@ const server = http.createServer(async (req, res) => {
     console.error(error);
     return send(res, 500, { error: "Something went wrong. Please try again." });
   }
-});
+}
 
-// Expired sessions are cleared hourly.
-setInterval(() => {
+// Hourly: clear expired sessions and old records, and send renewal and overdue-invoice reminders. A server that
+// stays on runs it on a timer; online hosts that start and stop on demand run it on the first visit each hour.
+function housekeeping() {
   run("DELETE FROM sessions WHERE expires_at < ?", new Date().toISOString());
   run("DELETE FROM notifications WHERE created_at < datetime('now', '-90 days')");
+  run("DELETE FROM auth_failures WHERE at < ?", Date.now() - 86400000);
   checkRenewals();
-}, 3600000).unref();
-checkRenewals();
+  setSetting("housekeeping_at", new Date().toISOString());
+}
+let housekeepingCheckedAt = 0;
+function housekeepingIfDue() {
+  if (Date.now() - housekeepingCheckedAt < 5 * 60000) return;
+  housekeepingCheckedAt = Date.now();
+  const last = getSetting("housekeeping_at");
+  if (!last || Date.now() - new Date(last).getTime() > 3600000) {
+    try {
+      housekeeping();
+    } catch (err) {
+      console.error("Housekeeping failed:", err);
+    }
+  }
+}
+if (!ON_VERCEL) setInterval(housekeeping, 3600000).unref();
+housekeepingIfDue();
 
 /** Opens the default browser (used by the double-click start scripts). */
 function openBrowser(target) {
@@ -1390,6 +1424,7 @@ function openBrowser(target) {
   }
 }
 const LOCAL_URL = `http://localhost:${PORT}`;
+const server = http.createServer(handle);
 server.on("error", (error) => {
   if (error.code === "EADDRINUSE") {
     console.error(`Port ${PORT} is already in use — the workspace is probably already running. Open ${LOCAL_URL}`);
@@ -1397,7 +1432,7 @@ server.on("error", (error) => {
   } else console.error(error);
   process.exit(1);
 });
-server.listen(PORT, HOST, () => {
+if (!ON_VERCEL) server.listen(PORT, HOST, () => {
   if (process.argv.includes("--open")) openBrowser(LOCAL_URL);
   console.log(`Integral Workspace Lite is running on ${LOCAL_URL}`);
   if (HOST === "0.0.0.0") {
@@ -1408,4 +1443,3 @@ server.listen(PORT, HOST, () => {
   if (get("SELECT COUNT(*) AS n FROM users").n === 0) console.log("Open it in a browser to create the first admin account.");
 });
 
-export { db };

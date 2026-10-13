@@ -2,7 +2,7 @@
   "name": "integral-workspace-lite",
   "version": "1.0.0",
   "private": true,
-  "description": "A small self-hosted team workspace for Integral Academy. No dependencies: needs only Node.js 22.13 or newer.",
+  "description": "A small team workspace for Integral Academy. On a computer it needs only Node.js 22.13 or newer; the one dependency is used only when hosted online (Vercel + Turso).",
   "type": "module",
   "engines": {
     "node": ">=22.13"
@@ -10,5 +10,8 @@
   "scripts": {
     "start": "node --disable-warning=ExperimentalWarning server.js",
     "seed": "node --disable-warning=ExperimentalWarning seed.js"
+  },
+  "dependencies": {
+    "@libsql/client": "0.17.4"
   }
 }
