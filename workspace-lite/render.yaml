@@ -7,8 +7,8 @@ services:
     region: frankfurt # closest to South Africa
     runtime: docker
     rootDir: workspace-lite
-    dockerfilePath: ./Dockerfile
-    dockerContext: .
+    dockerfilePath: ./workspace-lite/Dockerfile # Render reads these paths from the top of the repository
+    dockerContext: ./workspace-lite
     plan: starter # a persistent disk needs a paid plan; the free plan would wipe your data
     healthCheckPath: /health
     disk:
